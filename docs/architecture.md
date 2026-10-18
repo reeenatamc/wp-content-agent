@@ -42,7 +42,8 @@ run every node with fakes.
 
 `usage` is the cost log: every node appends one `NodeUsage` with the model, input and
 output tokens, cache reads and writes, and the estimated cost from `MODEL_PRICES`. The CLI
-prints it as each node finishes, and `RunSnapshot` sums it.
+prints it as each node finishes, and `RunSnapshot` sums it. Prompt caching only applies
+above the provider's minimum cacheable length, so short briefs show no cache savings.
 
 ## Nodes
 
@@ -87,7 +88,8 @@ revisions used. With none left, a revise decision raises `AgentError`; the runne
 exist yet, and calls `create_draft_post`. If the server reused an existing draft with the
 same slug, title and content, the run gets a warning. If WordPress
 answers with any status other than `draft`, the run is marked failed and the post id is
-kept so the post can be found.
+kept so the post can be found. The converter is tested against the block grammar, not
+the editor itself, so an unusual structure may open as a Custom HTML block.
 
 ## Running and resuming
 
@@ -134,7 +136,13 @@ A failure in `human_approval` (an invalid decision) is retryable: the node start
 the run waits for approval and a new decision can be sent. A run waiting for approval is
 never retryable. If a failed `publish_draft` request timed out, WordPress may have
 created the post anyway; the retry finds the draft with the same slug, title and content
-and reuses it instead of creating a second one, and the run gets a warning.
+and reuses it instead of creating a second one, and the run gets a warning. A draft that
+WordPress changed on save (a filtered title or body) does not match, so on a site with
+such filters, check for the draft before retrying a timed-out publish. A run whose post
+already has an id is not retryable.
+
+The per-run lock that stops two approvals at once lives in memory, so it covers one
+process. Several API workers on the same checkpoint file are not supported.
 
 Model calls have a timeout and retries from the provider SDK (`LLM_TIMEOUT_S`,
 `LLM_MAX_RETRIES`). WordPress calls have their own timeouts and retries, described in

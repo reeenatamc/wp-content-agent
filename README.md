@@ -196,13 +196,14 @@ strict mode and pytest on every push.
 
 - Drafts only. The agent never publishes; a person approves every post in WordPress.
 - Human revisions are capped by `MAX_HUMAN_REVISIONS` (2 by default) to keep cost
-  predictable.
-- Retries resume from the failed step and reuse a matching draft, so a timeout never
-  leaves two posts.
-- One process per checkpoint file. The per-run lock is in memory, which keeps deployment
-  simple; scaling to several workers would need a shared lock.
-- Facts with numbers are checked against the sources in code; claims without numbers are
-  left to the model reviewer.
+  predictable; each one runs the review loop again. Rejecting a draft ends the run.
+- Retries resume from the failed step. After a timed-out publish, the retry reuses a
+  draft with the same slug, title and content instead of creating a second one.
+- One API process per checkpoint file. The per-run lock lives in memory, which keeps
+  deployment simple; several workers on the same file are not supported.
+- Numbers in the draft are checked against the sources in code; claims without numbers
+  are left to the model reviewer.
+- Edge cases are documented in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
