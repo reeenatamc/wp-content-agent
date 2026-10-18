@@ -254,3 +254,26 @@ async def test_llm_error_on_first_call_has_no_usage() -> None:
         )
 
     assert info.value.usage is None
+
+
+async def test_gather_context_warns_about_each_truncated_term_list() -> None:
+    writer = fake_client(ai("done"), FINDINGS)
+    gateway = FakeGateway(truncated_categories=True, truncated_tags=True)
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=gateway)
+    )
+
+    assert len(update["warnings"]) == 2
+    assert "category list was cut at WP_MAX_TERM_PAGES" in update["warnings"][0]
+    assert "tag list was cut at WP_MAX_TERM_PAGES" in update["warnings"][1]
+
+
+async def test_gather_context_has_no_warnings_when_term_lists_are_complete() -> None:
+    writer = fake_client(ai("done"), FINDINGS)
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+    )
+
+    assert update["warnings"] == []

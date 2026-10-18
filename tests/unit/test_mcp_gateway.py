@@ -33,13 +33,27 @@ async def test_model_only_gets_read_only_tools() -> None:
     assert names == {"list_posts", "list_tags", "get_post"}
 
 
-async def test_list_results_are_unwrapped_into_terms() -> None:
+async def test_list_results_are_parsed_into_term_lists() -> None:
     async with connected_gateway() as gateway:
         categories = await gateway.list_categories()
         tags = await gateway.list_tags("dj")
 
-    assert [c.slug for c in categories] == ["backend"]
-    assert [t.name for t in tags] == ["django"]
+    assert [c.slug for c in categories.terms] == ["backend"]
+    assert [t.name for t in tags.terms] == ["django"]
+    assert not categories.truncated
+    assert not tags.truncated
+
+
+async def test_truncated_flag_reaches_the_gateway() -> None:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    fake = FakeWordPressClient(http)
+    fake.truncated_terms = True
+    async with create_connected_server_and_client_session(build_server(fake)) as session:
+        gateway = McpWordPress(session, await load_mcp_tools(session), call_timeout_s=5)
+        tags = await gateway.list_tags()
+    await http.aclose()
+
+    assert tags.truncated
 
 
 async def test_create_draft_post_returns_structured_result() -> None:

@@ -54,7 +54,8 @@ WordPress research tools (`list_posts`, `get_post`, `list_tags`). A second, tool
 turns the tool results into `ResearchNotes`. The notes are then checked against the raw
 tool output: a source that was not fetched is dropped, a fact with a number that is not on
 the page is dropped, and related posts are replaced by the id, title and link WordPress
-returned. Categories and tags are loaded in code, not by the model.
+returned. Categories and tags are loaded in code, not by the model. If either list was
+cut at `WP_MAX_TERM_PAGES` pages, the run gets a warning.
 
 `write` produces a `Draft`: title, slug, excerpt, meta description, semantic HTML,
 category ids and tag names. Category ids that are not among the site's categories are

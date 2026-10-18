@@ -97,14 +97,23 @@ async def gather_context(state: AgentState, runtime: Runtime[AgentContext]) -> d
     notes = ResearchNotes(
         sources=_grounded_sources(findings.sources, results),
         related_posts=_grounded_posts(findings.related_posts, results),
-        categories=categories,
-        tags=tags,
+        categories=categories.terms,
+        tags=tags.terms,
     )
     return {
         "context": notes,
+        "warnings": _truncation_warnings(categories.truncated, tags.truncated),
         "status": RunStatus.WRITING,
         "usage": [merge_usage(loop_usage, notes_usage)],
     }
+
+
+def _truncation_warnings(categories: bool, tags: bool) -> list[str]:
+    return [
+        f"the {kind} list was cut at WP_MAX_TERM_PAGES pages; the writer saw only part of it"
+        for kind, truncated in (("category", categories), ("tag", tags))
+        if truncated
+    ]
 
 
 async def _research(

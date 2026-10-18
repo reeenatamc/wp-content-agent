@@ -14,7 +14,7 @@ from wp_content_agent.llm import ModelClient
 from wp_content_agent.settings import ModelPrice
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
+from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term, TermList
 from wp_mcp.settings import WPSettings
 
 PRICES = {"fake-model": ModelPrice(input=1.0, output=2.0)}
@@ -104,15 +104,20 @@ class FakeWordPressClient(WordPressClient):
         super().__init__(http, settings)
         self.drafts: list[CreateDraftInput] = []
         self.reuse = False
+        self.truncated_terms = False
 
     async def list_posts(self, search: str = "", per_page: int = 10) -> list[PostSummary]:
         return [PostSummary(id=1, title=f"{search}:{per_page}", link="l", status="draft")]
 
-    async def list_categories(self) -> list[Term]:
-        return [Term(id=1, name="Backend", slug="backend")]
+    async def list_categories(self) -> TermList:
+        return TermList(
+            terms=[Term(id=1, name="Backend", slug="backend")], truncated=self.truncated_terms
+        )
 
-    async def list_tags(self, search: str = "") -> list[Term]:
-        return [Term(id=4, name="django", slug="django")]
+    async def list_tags(self, search: str = "") -> TermList:
+        return TermList(
+            terms=[Term(id=4, name="django", slug="django")], truncated=self.truncated_terms
+        )
 
     async def create_tag(self, name: str) -> Term:
         if name == "boom":

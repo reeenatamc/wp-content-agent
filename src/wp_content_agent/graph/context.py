@@ -4,7 +4,7 @@ from typing import Any, Protocol
 import httpx
 
 from wp_content_agent.llm import ModelClient
-from wp_content_agent.schemas import CreatedDraft, Term
+from wp_content_agent.schemas import CreatedDraft, Term, TermList
 from wp_content_agent.settings import Settings
 
 
@@ -20,9 +20,9 @@ class WordPressGateway(Protocol):
         """Run one research tool call; failures come back as text for the model."""
         ...
 
-    async def list_categories(self) -> list[Term]: ...
+    async def list_categories(self) -> TermList: ...
 
-    async def list_tags(self, search: str = "") -> list[Term]: ...
+    async def list_tags(self, search: str = "") -> TermList: ...
 
     async def create_tag(self, name: str) -> Term: ...
 

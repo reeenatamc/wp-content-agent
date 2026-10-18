@@ -21,8 +21,8 @@ the Docker site is configured.
 |---|---|---|
 | `list_posts` | `search` (up to 100 chars), `per_page` (1 to 20, default 10) | Published and draft posts: id, title, link, status |
 | `get_post` | `post_id` | One post with its content, status and edit URL |
-| `list_categories` | | Every category with its id |
-| `list_tags` | `search` | Tags with their ids |
+| `list_categories` | | Every category with its id, as `terms` plus a `truncated` flag |
+| `list_tags` | `search` | Tags with their ids, as `terms` plus a `truncated` flag |
 | `create_tag` | `name` (1 to 60 chars) | The new tag, or the existing one with that name |
 | `create_draft_post` | `title`, `content_html`, `slug`, `excerpt`, `categories`, `tags`, `meta_description` | The post id, status and edit URL, and `reused` |
 
@@ -63,7 +63,8 @@ server returns that tag.
 
 `list_categories` and `list_tags` follow the `X-WP-TotalPages` header up to
 `WP_MAX_TERM_PAGES` pages of 100. A site with more terms than that gets a truncated list
-and a warning in the log.
+and a warning in the log. Both tools return `{"terms": [...], "truncated": bool}`, and
+`truncated` is true when the list was cut. The agent turns that into a run warning.
 
 ## Settings
 

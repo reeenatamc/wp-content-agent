@@ -5,6 +5,7 @@ from wp_content_agent.schemas.context import (
     ResearchNotes,
     SourceNote,
     Term,
+    TermList,
 )
 from wp_content_agent.schemas.draft import Draft
 from wp_content_agent.schemas.outline import Outline, OutlineSection
@@ -36,4 +37,5 @@ __all__ = [
     "RunStatus",
     "SourceNote",
     "Term",
+    "TermList",
 ]
