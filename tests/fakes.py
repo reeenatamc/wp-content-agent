@@ -65,6 +65,8 @@ class FakeChatModel(BaseChatModel):
     def with_structured_output(  # type: ignore[override]
         self, schema: type[BaseModel], **kwargs: Any
     ) -> Runnable[Any, dict[str, Any]]:
+        assert kwargs == {"method": "json_schema", "include_raw": True}, kwargs
+
         def run(messages: list[BaseMessage]) -> dict[str, Any]:
             reply = self._next(messages)
             if isinstance(reply, AIMessage):

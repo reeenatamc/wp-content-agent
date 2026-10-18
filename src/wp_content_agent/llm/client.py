@@ -3,6 +3,7 @@ from typing import Any, cast
 
 import anthropic
 import openai
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import BaseModel
@@ -12,7 +13,8 @@ from wp_content_agent.llm.usage import usage_from_messages
 from wp_content_agent.schemas import NodeUsage
 from wp_content_agent.settings import ModelPrice
 
-_PROVIDER_ERRORS = (anthropic.APIError, openai.APIError)
+# Base classes on purpose: openai raises LengthFinishReasonError and similar outside APIError.
+_PROVIDER_ERRORS = (anthropic.AnthropicError, openai.OpenAIError, OutputParserException)
 
 
 class ModelClient:
@@ -41,8 +43,9 @@ class ModelClient:
         raw = cast(AIMessage, result["raw"])
         usage = self.usage(node, [raw])
         parsed = result.get("parsed")
-        if result.get("parsing_error") is not None or not isinstance(parsed, schema):
-            raise LLMError(f"{node}: output did not match {schema.__name__}")
+        error = result.get("parsing_error")
+        if error is not None or not isinstance(parsed, schema):
+            raise LLMError(f"{node}: output did not match {schema.__name__}: {error}", usage)
         return parsed, usage
 
     async def chat(self, messages: Sequence[BaseMessage], tools: Sequence[Any] = ()) -> AIMessage:
