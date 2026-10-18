@@ -192,28 +192,18 @@ Unit tests fake the models and WordPress. The integration tests run the MCP serv
 the Docker WordPress and drive the whole graph with scripted models. CI runs ruff, mypy in
 strict mode and pytest on every push.
 
-## Limitations
+## Design choices
 
-- Rejecting a draft ends the run. To change a draft instead, use revise; each run allows
-  `MAX_HUMAN_REVISIONS` of them (2 by default), and each one can cost up to
-  `MAX_REVISIONS + 1` more writes, because the review loop runs again after the note.
-- A run that failed in a node can be retried from that node; a post that already has an
-  id cannot. If a failed `publish_draft` request timed out, WordPress may have created
-  the post anyway; the retry reuses a draft with the same slug, title and content instead
-  of creating a second one, and the run says so. A draft WordPress changed on save (a
-  filtered title or body) is not recognised, so check the site if the first attempt
-  timed out.
-- The Gutenberg converter is tested against the block grammar, not against the editor
-  itself, so an unusual structure may open as a Custom HTML block.
-- If the site has more categories or tags than `WP_MAX_TERM_PAGES` allows, the list is
-  truncated. The run gets a warning and the log says so, but the writer only sees part of
-  the list.
-- Prompt caching does nothing when a prompt is shorter than the provider's minimum
-  cacheable length, which is the case for short briefs.
-- The per-run lock that stops two approvals at once works inside one process. Running
-  several API workers on the same checkpoint file is not supported.
-- Number checks catch invented statistics, not invented claims without numbers; that part
-  rests on the model reviewer.
+- Drafts only. The agent never publishes; a person approves every post in WordPress.
+- Human revisions are capped by `MAX_HUMAN_REVISIONS` (2 by default) to keep cost
+  predictable; each one runs the review loop again. Rejecting a draft ends the run.
+- Retries resume from the failed step. After a timed-out publish, the retry reuses a
+  draft with the same slug, title and content instead of creating a second one.
+- One API process per checkpoint file. The per-run lock lives in memory, which keeps
+  deployment simple; several workers on the same file are not supported.
+- Numbers in the draft are checked against the sources in code; claims without numbers
+  are left to the model reviewer.
+- Edge cases are documented in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
