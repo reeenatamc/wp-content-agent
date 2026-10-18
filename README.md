@@ -68,7 +68,7 @@ uv run wpagent run --brief my-brief.yaml --yes                  # approve if rev
 uv run wpagent status <run_id>
 uv run wpagent approve <run_id> --note "looks good"
 uv run wpagent reject <run_id>
-uv run wpagent retry <run_id>                                   # run publish_draft again after it failed
+uv run wpagent retry <run_id>                                   # run the failed step again
 uv run wpagent revise <run_id> --note "shorter intro"          # back to the writer
 uv run wpagent serve                                            # HTTP API on :8000
 ```
@@ -101,7 +101,7 @@ limits are all settings: `.env.example` lists the common ones and
 | `GET` | `/runs/{id}` | Status, the draft waiting for approval, review result, usage and cost. |
 | `POST` | `/runs/{id}/approve` | Approve, with an optional note. The draft is created in the background. |
 | `POST` | `/runs/{id}/reject` | Reject. Nothing is created. |
-| `POST` | `/runs/{id}/retry` | Run `publish_draft` again for a run that failed there, using the approved draft. No model calls. |
+| `POST` | `/runs/{id}/retry` | Run the step that failed again, from the checkpoint taken just before it. Earlier steps are not run or paid for again. Retrying `publish_draft` makes no model calls. |
 | `POST` | `/runs/{id}/revise` | Send the draft back to the writer. Body: `{"note": "..."}`, 1 to 2000 characters, required. The run writes, reviews and waits for approval again. `409` when no human revisions are left. |
 | `POST` | `/webhooks/n8n` | Same as `POST /runs`, authenticated with `X-Webhook-Secret`. |
 
@@ -197,11 +197,12 @@ strict mode and pytest on every push.
 - Rejecting a draft ends the run. To change a draft instead, use revise; each run allows
   `MAX_HUMAN_REVISIONS` of them (2 by default), and each one can cost up to
   `MAX_REVISIONS + 1` more writes, because the review loop runs again after the note.
-- Only a run that failed inside `publish_draft` can be retried; other failures need a
-  new run. If the failed request timed out, WordPress may have created the post anyway;
-  the retry reuses a draft with the same slug, title and content instead of creating a
-  second one, and the run says so. A draft WordPress changed on save (a filtered title
-  or body) is not recognised, so check the site if the first attempt timed out.
+- A run that failed in a node can be retried from that node; a post that already has an
+  id cannot. If a failed `publish_draft` request timed out, WordPress may have created
+  the post anyway; the retry reuses a draft with the same slug, title and content instead
+  of creating a second one, and the run says so. A draft WordPress changed on save (a
+  filtered title or body) is not recognised, so check the site if the first attempt
+  timed out.
 - The Gutenberg converter is tested against the block grammar, not against the editor
   itself, so an unusual structure may open as a Custom HTML block.
 - If the site has more categories or tags than `WP_MAX_TERM_PAGES` allows, the list is

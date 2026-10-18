@@ -13,7 +13,7 @@ from wp_content_agent.api.service import RunService
 from wp_content_agent.errors import LLMError, ToolError
 from wp_content_agent.graph import AgentState
 from wp_content_agent.runner import AgentRunner
-from wp_content_agent.schemas import RunStatus
+from wp_content_agent.schemas import Review, RunStatus
 from wp_content_agent.settings import Settings
 
 BRIEF = {"topic": "Caching in Django", "audience": "Backend developers"}
@@ -235,6 +235,36 @@ async def test_retry_creates_the_draft_after_a_publish_failure() -> None:
     assert (body["status"], body["wp_post_id"], body["can_retry"]) == ("draft_created", 8, False)
 
 
+async def test_retry_of_a_failed_review_reports_reviewing_and_ends_awaiting_approval() -> None:
+    calls = 0
+
+    async def review(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("review failed")
+        return {
+            "review": Review(passed=True, checks=[], fixes=[]),
+            "status": RunStatus.AWAITING_APPROVAL,
+        }
+
+    app = _app(fake_runner(review=review))
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        failed = (await client.get(f"/runs/{run_id}")).json()
+        accepted = await client.post(f"/runs/{run_id}/retry")
+        await _service(app).wait(run_id)
+        body = (await client.get(f"/runs/{run_id}")).json()
+
+    assert (failed["status"], failed["failed_node"], failed["can_retry"]) == (
+        "failed",
+        "review",
+        True,
+    )
+    assert (accepted.status_code, accepted.json()["status"]) == (202, "reviewing")
+    assert (body["status"], body["can_retry"]) == ("awaiting_approval", False)
+
+
 async def test_retry_unknown_run_is_404() -> None:
     app = _app()
     async with _client(app) as client:
@@ -243,7 +273,7 @@ async def test_retry_unknown_run_is_404() -> None:
     assert response.status_code == 404
 
 
-async def test_retry_of_a_run_that_did_not_fail_in_publish_is_409() -> None:
+async def test_retry_of_a_run_that_did_not_fail_is_409() -> None:
     app = _app()
     async with _client(app) as client:
         run_id = await _started(client, app)

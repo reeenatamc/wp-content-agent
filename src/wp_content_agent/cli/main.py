@@ -97,7 +97,9 @@ def _parser() -> argparse.ArgumentParser:
         decide.add_argument("--note", default="", help="note stored with the decision")
         decide.set_defaults(command=_decide, approved=approved)
 
-    retry = commands.add_parser("retry", help="create the draft again for a run that failed there")
+    retry = commands.add_parser(
+        "retry", help="run the failed step again for a run that failed in a node"
+    )
     retry.add_argument("run_id")
     retry.set_defaults(command=_retry)
 
@@ -348,11 +350,11 @@ def _summary(snapshot: RunSnapshot, out: TextIO) -> None:
     if snapshot.error:
         lines.append(f"error:  {snapshot.error}")
     if snapshot.can_retry:
-        # A request that timed out may still have created the post on the site.
-        lines.append(
-            f"retry:  wpagent retry {snapshot.run_id}"
-            " (check WordPress for the draft first; a timeout may have created it)"
-        )
+        hint = f"retry:  wpagent retry {snapshot.run_id} (runs {snapshot.failed_node} again"
+        if snapshot.failed_node == "publish_draft":
+            # A request that timed out may still have created the post on the site.
+            hint += "; check WordPress for the draft first, a timeout may have created it"
+        lines.append(hint + ")")
     lines.extend(f"warning: {warning}" for warning in snapshot.warnings)
     lines.append(f"usage:  {snapshot.total_tokens:,} tokens, ${snapshot.total_cost_usd:.4f}")
     print("\n".join(lines), file=out)

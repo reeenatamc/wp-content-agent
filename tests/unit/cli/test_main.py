@@ -132,7 +132,7 @@ def test_publish_failure_suggests_retry_and_retry_finishes_it(brief: Path) -> No
 
     code, output = _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "a", "")
     assert code == EXIT_FAILED
-    assert "retry:  wpagent retry r1" in output
+    assert "retry:  wpagent retry r1 (runs publish_draft again" in output
 
     code, output = _cli(["retry", "r1"], runner)
     assert code == EXIT_OK

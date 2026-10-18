@@ -1,14 +1,17 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
 from pydantic import ValidationError
 
-from tests.fake_graph import fake_nodes, flaky_publish
+from tests.fake_graph import fake_nodes, flaky_publish, usage
 from tests.fakes import fake_client
-from wp_content_agent.graph import AgentContext, build_graph
+from wp_content_agent.errors import LLMError
+from wp_content_agent.graph import AgentContext, AgentState, build_graph
 from wp_content_agent.runner import AgentRunner, checkpoint_serializer
-from wp_content_agent.schemas import ApprovalDecision, Brief, RunStatus
+from wp_content_agent.schemas import ApprovalDecision, Brief, Review, RunStatus
 from wp_content_agent.settings import Settings
 
 
@@ -57,6 +60,72 @@ async def test_retry_runs_only_publish_with_a_sqlite_checkpoint(tmp_path: Path) 
     assert visited == ["publish_draft"]
     assert (done.status, done.wp_post_id, done.error) == (RunStatus.DRAFT_CREATED, 8, None)
     assert done.usage == failed.usage
+
+
+async def test_retry_of_a_middle_node_resumes_from_its_checkpoint_with_sqlite(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def review(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("review failed", usage("review"))
+        return {
+            "review": Review(passed=True, checks=[], fixes=[]),
+            "status": RunStatus.AWAITING_APPROVAL,
+            "usage": [usage("review")],
+        }
+
+    context = AgentContext(
+        settings=Settings(_env_file=None),  # type: ignore[call-arg]
+        writer=fake_client(),
+        reviewer=fake_client(),
+        wordpress=object(),  # type: ignore[arg-type]
+    )
+    visited: list[str] = []
+
+    async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "c.sqlite")) as saver:
+        saver.serde = checkpoint_serializer()
+        graph = build_graph(fake_nodes(review=review), checkpointer=saver)  # type: ignore[arg-type]
+        runner = AgentRunner(graph, context)
+        failed = await runner.start(Brief(topic="Caching in Django", audience="devs"), run_id="r")
+        retried = await runner.retry("r", on_progress=lambda node, update: visited.append(node))
+        done = await runner.resume("r", ApprovalDecision(approved=True))
+
+    assert (failed.status, failed.failed_node, failed.can_retry) == (
+        RunStatus.FAILED,
+        "review",
+        True,
+    )
+    assert visited == ["review"]
+    assert (retried.status, retried.can_retry) == (RunStatus.AWAITING_APPROVAL, False)
+    assert [entry.node for entry in retried.usage] == ["plan", "review", "review"]
+    assert done.status == RunStatus.DRAFT_CREATED
+
+
+async def test_invalid_decision_is_retryable_with_a_sqlite_checkpoint(tmp_path: Path) -> None:
+    context = AgentContext(
+        settings=Settings(_env_file=None),  # type: ignore[call-arg]
+        writer=fake_client(),
+        reviewer=fake_client(),
+        wordpress=object(),  # type: ignore[arg-type]
+    )
+
+    async with AsyncSqliteSaver.from_conn_string(str(tmp_path / "c.sqlite")) as saver:
+        saver.serde = checkpoint_serializer()
+        graph = build_graph(fake_nodes(), checkpointer=saver)  # type: ignore[arg-type]
+        runner = AgentRunner(graph, context)
+        await runner.start(Brief(topic="Caching in Django", audience="devs"), run_id="r")
+        await runner._drive(Command(resume={"approved": "perhaps"}), "r", None)
+        failed = await runner.get("r")
+        waiting = await runner.retry("r")
+        done = await runner.resume("r", ApprovalDecision(approved=True))
+
+    assert (failed.status, failed.can_retry) == (RunStatus.FAILED, True)
+    assert (waiting.status, waiting.can_retry) == (RunStatus.AWAITING_APPROVAL, False)
+    assert done.status == RunStatus.DRAFT_CREATED
 
 
 def test_brief_source_urls_are_validated_and_normalized() -> None:
