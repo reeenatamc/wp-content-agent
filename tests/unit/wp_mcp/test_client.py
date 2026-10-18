@@ -229,3 +229,53 @@ async def test_get_post_requests_edit_context_and_cleans_excerpt(
     assert seen[0].url.params["context"] == "edit"
     assert post.excerpt == "Summary"
     assert post.edit_url.endswith("post=4&action=edit")
+
+
+async def test_draft_post_is_not_retried_after_server_error(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(502)
+
+    with pytest.raises(WordPressError):
+        await make_client(handler).create_draft_post(_draft())
+
+    assert calls == 1
+
+
+async def test_draft_post_is_not_retried_after_read_timeout(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(WordPressError):
+        await make_client(handler).create_draft_post(_draft())
+
+    assert calls == 1
+
+
+async def test_draft_post_is_retried_when_connection_failed(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(201, json={"id": 9, "status": "draft", "link": "http://wp.test/?p=9"})
+
+    created = await make_client(handler).create_draft_post(_draft())
+
+    assert calls == 2
+    assert created.id == 9

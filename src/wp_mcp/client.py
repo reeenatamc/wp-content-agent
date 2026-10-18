@@ -13,6 +13,8 @@ from wp_mcp.settings import WPSettings
 logger = logging.getLogger(__name__)
 
 _TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+# Errors where the request never reached WordPress, so even a POST is safe to resend.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
 
 
 class WordPressClient:
@@ -97,6 +99,9 @@ class WordPressClient:
         return PostDetail.model_validate({**data, "edit_url": self.edit_url(data["id"])})
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        # A POST that timed out or got a 5xx may still have created the post or tag,
+        # so retrying it could create duplicates.
+        idempotent = method != "POST"
         attempts = self._settings.max_retries + 1
         last: WordPressError | None = None
         for attempt in range(attempts):
@@ -107,14 +112,21 @@ class WordPressClient:
             except httpx.TimeoutException as exc:
                 last = WordPressError(f"request timed out: {path}", code="timeout")
                 last.__cause__ = exc
+                if not (idempotent or isinstance(exc, _NOT_SENT_ERRORS)):
+                    raise last from exc
             except httpx.TransportError as exc:
                 last = WordPressError(f"connection failed: {exc}", code="connection_error")
                 last.__cause__ = exc
+                if not (idempotent or isinstance(exc, _NOT_SENT_ERRORS)):
+                    raise last from exc
             else:
                 if response.is_success:
                     return response.json()
                 last = WordPressError.from_payload(response.status_code, _json_or_none(response))
-                if response.status_code not in _TRANSIENT_STATUS:
+                retryable = response.status_code in _TRANSIENT_STATUS and (
+                    idempotent or response.status_code == 429
+                )
+                if not retryable:
                     raise last
             logger.warning(
                 "transient failure on %s %s (attempt %d/%d): %s",
