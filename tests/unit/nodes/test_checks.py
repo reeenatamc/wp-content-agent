@@ -69,3 +69,37 @@ def test_unsupported_numbers_allows_numbers_from_sources() -> None:
     stray = unsupported_numbers(draft, ["Per-view caching cut load by 40%."])
 
     assert stray == ["73%"]
+
+
+def test_allowed_html_flags_unsafe_link_schemes() -> None:
+    html = '<p><a href="javascript:alert(1)">x</a> <a href="/ok">y</a></p>'
+    draft = DRAFT.model_copy(update={"content_html": html})
+
+    check, _ = allowed_html_check(draft)
+
+    assert not check.passed
+    assert "javascript:alert(1)" in check.note
+    assert "/ok" not in check.note
+
+
+def test_data_numbers_ignores_entities_and_splits_lists() -> None:
+    numbers = data_numbers("<p>It&#8217;s fine &#8212; values 10,20,30</p>")
+
+    assert numbers == {"10", "20", "30"}
+
+
+def test_percent_word_matches_percent_sign() -> None:
+    assert data_numbers("forty: 40 percent") == data_numbers("40%")
+
+
+def test_percentage_is_not_excused_by_a_plain_number() -> None:
+    html = "<p>A 1200% increase.</p>"
+    draft = DRAFT.model_copy(update={"content_html": html})
+
+    assert unsupported_numbers(draft, ["about 1200 words"]) == ["1200%"]
+
+
+def test_meta_description_numbers_are_checked() -> None:
+    draft = DRAFT.model_copy(update={"meta_description": "Cut load by 63% today."})
+
+    assert unsupported_numbers(draft, []) == ["63%"]

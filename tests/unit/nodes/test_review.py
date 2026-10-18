@@ -108,3 +108,33 @@ def test_combine_fails_claims_check_on_numbers_not_in_sources() -> None:
     claims = next(c for c in result.checks if c.name == "no_unsupported_claims")
     assert not claims.passed
     assert "63%" in claims.note
+
+
+def test_combine_keeps_model_note_when_numbers_also_fail() -> None:
+    checks = [
+        CheckResult(name=name, passed=name != "no_unsupported_claims", note="invented quote")
+        for name in MODEL_CHECKS
+    ]
+    draft = GOOD.model_copy(update={"content_html": "<p>Costs fell 63%.</p>"})
+
+    result = combine(ReviewVerdict(checks=checks, fixes=[]), draft, [])
+
+    claims = next(c for c in result.checks if c.name == "no_unsupported_claims")
+    assert claims.note == "invented quote; numbers not found in the sources: 63%"
+
+
+async def test_numbers_from_source_titles_are_allowed_but_target_length_is_not() -> None:
+    notes = ResearchNotes(
+        sources=[SourceNote(url="u", title="2025 State of Django", facts=["Caching helps."])]
+    )
+    draft = GOOD.model_copy(
+        update={"content_html": "<p>Per the 2025 State of Django report, 600 teams agree.</p>"}
+    )
+
+    update = await review(
+        _state(draft, context=notes),  # type: ignore[arg-type]
+        runtime(reviewer=fake_client(ALL_PASS)),
+    )
+
+    claims = next(c for c in update["review"].checks if c.name == "no_unsupported_claims")
+    assert claims.note == "numbers not found in the sources: 600"

@@ -49,12 +49,9 @@ async def review(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str,
     draft = state["draft"]
     notes = state.get("context") or ResearchNotes()
     reviewer = ctx.reviewer
+    brief_text, outline_text = render_brief(state["brief"]), _outline(state)
     task = "\n\n".join(
-        [
-            render_brief(state["brief"]),
-            f"Outline:\n{_outline(state)}",
-            f"Research notes:\n{render_context(notes)}",
-        ]
+        [brief_text, f"Outline:\n{outline_text}", f"Research notes:\n{render_context(notes)}"]
     )
     messages = [
         reviewer.system(SYSTEM_PROMPT),
@@ -63,7 +60,7 @@ async def review(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str,
     ]
     verdict, usage = await reviewer.structured(ReviewVerdict, messages, node="review")
 
-    result = combine(verdict, draft, _allowed_texts(state, notes))
+    result = combine(verdict, draft, _allowed_texts(state, notes, outline_text))
     status = (
         RunStatus.WRITING
         if should_revise({**state, "review": result}, ctx.settings.max_revisions)
@@ -85,11 +82,9 @@ def combine(verdict: ReviewVerdict, draft: Draft, allowed_texts: list[str]) -> R
     if stray:
         index = MODEL_CHECKS.index("no_unsupported_claims")
         listed = ", ".join(stray)
-        checks[index] = CheckResult(
-            name="no_unsupported_claims",
-            passed=False,
-            note=f"numbers not found in the sources: {listed}",
-        )
+        model_note = checks[index].note if not checks[index].passed else ""
+        note = "; ".join(filter(None, [model_note, f"numbers not found in the sources: {listed}"]))
+        checks[index] = CheckResult(name="no_unsupported_claims", passed=False, note=note)
         fixes.append(f"Remove or rephrase without numbers: {listed}.")
 
     for check, fix in (meta_description_check(draft), allowed_html_check(draft)):
@@ -104,9 +99,12 @@ def _outline(state: AgentState) -> str:
     return render_outline(outline) if outline else "none"
 
 
-def _allowed_texts(state: AgentState, notes: ResearchNotes) -> list[str]:
-    texts = [render_brief(state["brief"]), *(p.title for p in notes.related_posts)]
-    texts.extend(fact for source in notes.sources for fact in source.facts)
-    if outline := state.get("outline"):
-        texts.append(render_outline(outline))
+def _allowed_texts(state: AgentState, notes: ResearchNotes, outline_text: str) -> list[str]:
+    """Text the writer may take numbers from. The brief's target length is left out."""
+    brief = state["brief"]
+    texts = [brief.topic, brief.audience, *brief.keywords, outline_text]
+    texts.extend(post.title for post in notes.related_posts)
+    for source in notes.sources:
+        texts.append(source.title)
+        texts.extend(source.facts)
     return texts

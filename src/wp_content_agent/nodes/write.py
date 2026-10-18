@@ -13,10 +13,11 @@ from wp_content_agent.nodes.render import (
     render_outline,
 )
 from wp_content_agent.schemas import Draft, ResearchNotes, RunStatus
+from wp_content_agent.schemas.draft import ALLOWED_TAGS_TEXT, META_MAX, META_MIN
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You write blog posts for a WordPress site.
+SYSTEM_PROMPT = f"""You write blog posts for a WordPress site.
 
 Write the post described by the brief, following the outline's sections and order. Match \
 the audience and tone, and land within 10 percent of the target length.
@@ -25,8 +26,8 @@ Facts: state as fact only what appears in the research notes' sources, and attri
 ("according to <source title>"). Never invent statistics, percentages, studies, quotes or \
 dates. If a section needs evidence the notes do not have, make the point without numbers.
 
-Body HTML: use only <p>, <h2>, <h3>, <ul>, <ol>, <li>, <a href>, <strong>, <em>, \
-<blockquote> and <code>. Each top-level element on its own line. No <h1> (the title is \
+Body HTML: use only {ALLOWED_TAGS_TEXT}, with href as the only attribute (on links). \
+Each top-level element on its own line. No <h1> (the title is \
 separate), no inline styles, classes, scripts or block comments. Link to existing posts \
 from the notes where they genuinely help, and to sources you cite.
 
@@ -38,8 +39,8 @@ Fields:
 - title: specific, under 70 characters when possible.
 - slug: a few lowercase words.
 - excerpt: one or two sentences.
-- meta_description: between 140 and 160 characters, counted with spaces. Count before \
-answering.
+- meta_description: between {META_MIN} and {META_MAX} characters, counted with spaces. \
+Count before answering.
 - category_ids: ids from the notes' existing categories only.
 - tag_names: three to six short tags, reusing existing tag names when they fit."""
 
