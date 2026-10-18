@@ -65,6 +65,9 @@ class Settings(BaseSettings):
 
     checkpoint_db: Path = Path("wpagent.sqlite")
     webhook_secret: SecretStr | None = None
+    # Loopback by default: only the webhook checks a secret, the run endpoints do not.
+    api_host: str = "127.0.0.1"
+    api_port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = "INFO"
 
     @field_validator("log_level")

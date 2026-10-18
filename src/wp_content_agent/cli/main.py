@@ -51,6 +51,9 @@ def main(
         stream=sys.stderr,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    if args.command is _serve:
+        _serve(args, settings)
+        return EXIT_OK
     command: Callable[..., Any] = args.command
     try:
         snapshot: RunSnapshot = asyncio.run(command(args, settings, open_runner, ask, out))
@@ -84,7 +87,24 @@ def _parser() -> argparse.ArgumentParser:
         decide.add_argument("run_id")
         decide.add_argument("--note", default="", help="note stored with the decision")
         decide.set_defaults(command=_decide, approved=approved)
+    serve = commands.add_parser("serve", help="start the HTTP API")
+    serve.add_argument("--host", help="defaults to API_HOST")
+    serve.add_argument("--port", type=int, help="defaults to API_PORT")
+    serve.set_defaults(command=_serve)
     return parser
+
+
+def _serve(args: argparse.Namespace, settings: Settings) -> None:
+    import uvicorn
+
+    from wp_content_agent.api import create_app
+
+    uvicorn.run(
+        create_app(settings),
+        host=args.host or settings.api_host,
+        port=args.port or settings.api_port,
+        log_level=settings.log_level.lower(),
+    )
 
 
 async def _run(
