@@ -4,10 +4,10 @@ import pytest
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from tests.fakes import ai, fake_client
+from tests.fakes import PRICES, FakeChatModel, ai, fake_client
 from wp_content_agent.errors import LLMError
-from wp_content_agent.llm import estimate_cost
-from wp_content_agent.settings import ModelPrice
+from wp_content_agent.llm import ModelClient, estimate_cost
+from wp_content_agent.settings import ModelPrice, Settings
 
 
 class Answer(BaseModel):
@@ -60,3 +60,78 @@ def test_dated_model_name_uses_base_price() -> None:
     cost = estimate_cost("claude-sonnet-5-5-20261001", 1_000_000, 0, prices)
 
     assert cost == 2.0
+
+
+def test_cost_prices_cached_tokens_with_explicit_prices() -> None:
+    prices = {"m": ModelPrice(input=2.0, output=10.0, cache_read=0.5, cache_write=3.0)}
+
+    cost = estimate_cost("m", 1000, 100, prices, cache_read_tokens=600, cache_write_tokens=200)
+
+    assert cost == pytest.approx((200 * 2.0 + 600 * 0.5 + 200 * 3.0 + 100 * 10.0) / 1_000_000)
+
+
+def test_cost_cache_prices_default_to_input_price() -> None:
+    prices = {"m": ModelPrice(input=2.0, output=10.0)}
+
+    cost = estimate_cost("m", 1000, 0, prices, cache_read_tokens=600, cache_write_tokens=200)
+
+    assert cost == pytest.approx(1000 * 2.0 / 1_000_000)
+
+
+def test_default_claude_prices_include_cache_rates() -> None:
+    prices = Settings(_env_file=None).model_prices  # type: ignore[call-arg]
+
+    sonnet = prices["claude-sonnet-5-5"]
+
+    assert (sonnet.cache_read_price, sonnet.cache_write_price) == (0.2, 2.5)
+
+
+def test_cost_uncached_input_floors_at_zero() -> None:
+    prices = {"m": ModelPrice(input=1.0, output=1.0)}
+
+    cost = estimate_cost("m", 10, 0, prices, cache_read_tokens=20)
+
+    assert cost == pytest.approx(20 * 1.0 / 1_000_000)
+
+
+def test_usage_sums_cache_tokens_from_input_token_details() -> None:
+    client = fake_client()
+
+    usage = client.usage("n", [ai(cache=(4, 2)), ai(cache=(1, 0))])
+
+    assert (usage.cache_read_tokens, usage.cache_write_tokens) == (5, 2)
+    assert usage.input_tokens == 20
+
+
+def test_usage_tolerates_null_token_details() -> None:
+    message = ai()
+    assert message.usage_metadata is not None
+    message.usage_metadata["input_token_details"] = {"cache_read": None}  # type: ignore[typeddict-item]
+
+    usage = fake_client().usage("n", [message])
+
+    assert usage.cache_read_tokens == 0
+
+
+def test_usage_without_token_details_has_no_cache_tokens() -> None:
+    client = fake_client()
+
+    usage = client.usage("n", [ai()])
+
+    assert (usage.cache_read_tokens, usage.cache_write_tokens) == (0, 0)
+
+
+def test_system_marks_prompt_for_caching_when_enabled() -> None:
+    client = ModelClient(FakeChatModel.scripted(), "fake-model", PRICES, cache_prompts=True)
+
+    message = client.system("rules")
+
+    assert message.content == [
+        {"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+def test_system_is_plain_text_without_caching() -> None:
+    message = fake_client().system("rules")
+
+    assert message.content == "rules"

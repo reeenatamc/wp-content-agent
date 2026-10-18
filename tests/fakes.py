@@ -20,13 +20,20 @@ from wp_mcp.settings import WPSettings
 PRICES = {"fake-model": ModelPrice(input=1.0, output=2.0)}
 
 
-def ai(content: str = "", tokens: tuple[int, int] = (10, 5), **kwargs: Any) -> AIMessage:
+def ai(
+    content: str = "",
+    tokens: tuple[int, int] = (10, 5),
+    cache: tuple[int, int] = (0, 0),
+    **kwargs: Any,
+) -> AIMessage:
+    details = {"cache_read": cache[0], "cache_creation": cache[1]} if any(cache) else None
     return AIMessage(
         content=content,
         usage_metadata={
             "input_tokens": tokens[0],
             "output_tokens": tokens[1],
             "total_tokens": sum(tokens),
+            **({"input_token_details": details} if details else {}),
         },
         **kwargs,
     )

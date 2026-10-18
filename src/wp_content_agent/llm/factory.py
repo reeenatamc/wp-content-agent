@@ -35,4 +35,9 @@ def build_chat_model(settings: Settings, model: str) -> BaseChatModel:
 
 def build_model_client(settings: Settings, role: Role) -> ModelClient:
     model = settings.writer if role == "writer" else settings.reviewer
-    return ModelClient(build_chat_model(settings, model), model, settings.model_prices)
+    return ModelClient(
+        build_chat_model(settings, model),
+        model,
+        settings.model_prices,
+        cache_prompts=settings.llm_provider == "anthropic",
+    )
