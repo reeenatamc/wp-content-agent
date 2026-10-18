@@ -3,6 +3,7 @@ import uuid
 from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.fakes import ai, fake_client
+from tests.integration.conftest import Cleanup
 from tests.unit.nodes.test_plan import OUTLINE
 from wp_content_agent.graph import AgentContext, build_graph
 from wp_content_agent.nodes import NODES
@@ -21,7 +22,7 @@ from wp_content_agent.schemas import (
 from wp_content_agent.settings import Settings
 from wp_content_agent.tools.mcp_gateway import connect_wordpress
 from wp_mcp.client import WordPressClient
-from wp_mcp.models import CreateDraftInput
+from wp_mcp.models import CreateDraftInput, PostSummary
 
 META = (
     "Cache Django querysets where reads dominate, pick timeouts on purpose, and clear "
@@ -29,8 +30,16 @@ META = (
 )
 
 
+async def _seeded_post(wordpress: WordPressClient, title: str) -> PostSummary:
+    """The post scripts/wp-up.sh seeds, matched by exact title among published posts."""
+    posts = await wordpress.list_posts(search=title)
+    matches = [post for post in posts if post.title == title and post.status == "publish"]
+    assert matches, f"seeded post {title!r} is missing; run scripts/wp-up.sh"
+    return matches[0]
+
+
 async def test_client_creates_a_draft_with_meta(
-    wordpress: WordPressClient, cleanup: list[int]
+    wordpress: WordPressClient, cleanup: Cleanup
 ) -> None:
     draft = CreateDraftInput(
         title="Integration draft",
@@ -39,7 +48,7 @@ async def test_client_creates_a_draft_with_meta(
     )
 
     created = await wordpress.create_draft_post(draft)
-    cleanup.append(created.id)
+    cleanup.posts.append(created.id)
     post = await wordpress.get_post(created.id)
 
     assert created.status == "draft"
@@ -47,12 +56,14 @@ async def test_client_creates_a_draft_with_meta(
     assert post.status == "draft"
 
 
-async def test_create_tag_twice_returns_the_same_tag(wordpress: WordPressClient) -> None:
+async def test_create_tag_twice_returns_the_same_tag(
+    wordpress: WordPressClient, cleanup: Cleanup
+) -> None:
     name = f"it-{uuid.uuid4().hex[:8]}"
 
     first = await wordpress.create_tag(name)
+    cleanup.tags.append(first.id)
     second = await wordpress.create_tag(name)
-    await wordpress._http.delete(f"/tags/{first.id}", params={"force": "true"})
 
     assert first.id == second.id
 
@@ -77,10 +88,10 @@ async def test_mcp_gateway_lists_research_tools_and_terms() -> None:
 
 
 async def test_full_graph_creates_a_gutenberg_draft(
-    wordpress: WordPressClient, cleanup: list[int]
+    wordpress: WordPressClient, cleanup: Cleanup
 ) -> None:
     """The real graph, MCP server and WordPress, with scripted model replies."""
-    seeded = (await wordpress.list_posts(search="Django caching basics"))[0]
+    seeded = await _seeded_post(wordpress, "Django caching basics")
     new_tag = f"querysets-{uuid.uuid4().hex[:6]}"
     draft = Draft(
         title="Cache Django querysets without stale data",
@@ -117,14 +128,15 @@ async def test_full_graph_creates_a_gutenberg_draft(
         runner = AgentRunner(build_graph(NODES, InMemorySaver()), context)
         pending = await runner.start(brief, run_id="it")
         done = await runner.resume("it", ApprovalDecision(approved=True))
-    assert done.wp_post_id is not None
-    cleanup.append(done.wp_post_id)
+        tags = await wordpress.list_tags(search=new_tag)
+        cleanup.tags.extend(tag.id for tag in tags)
+        if done.wp_post_id is not None:
+            cleanup.posts.append(done.wp_post_id)
+
+    assert done.wp_post_id is not None, done.error
     post = await wordpress.get_post(done.wp_post_id)
     raw = await wordpress._http.get(f"/posts/{done.wp_post_id}", params={"context": "edit"})
     content = raw.json()["content"]["raw"]
-    tags = await wordpress.list_tags(search=new_tag)
-    for tag in tags:
-        await wordpress._http.delete(f"/tags/{tag.id}", params={"force": "true"})
 
     assert pending.status == RunStatus.AWAITING_APPROVAL
     assert done.status == RunStatus.DRAFT_CREATED

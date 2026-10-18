@@ -1,6 +1,7 @@
 #!/bin/sh
-# Runs inside the WP-CLI container. Safe to run again: it skips what already exists
-# and replaces the agent's application password. The last line is the password.
+# Runs inside the WP-CLI container. Safe to run again: it skips what already exists.
+# With NEW_APP_PASSWORD=1 it replaces the agent's application password and prints it
+# as the last line; scripts/wp-up.sh sets it to 0 when .env already has a working one.
 set -eu
 
 if ! wp core is-installed 2>/dev/null; then
@@ -25,6 +26,11 @@ if ! wp core is-installed 2>/dev/null; then
     --post_content="<p>What EXPLAIN ANALYZE prints and which numbers matter first.</p>" >&2
 fi
 
+# Keep the site URL in step with WP_PORT, which may differ from the first install.
+wp option update home "$WP_URL" >&2
+wp option update siteurl "$WP_URL" >&2
+
+[ "$NEW_APP_PASSWORD" = "1" ] || exit 0
 for uuid in $(wp user application-password list "$WP_ADMIN_USER" --name=wpagent --field=uuid); do
   wp user application-password delete "$WP_ADMIN_USER" "$uuid" >&2
 done

@@ -6,6 +6,7 @@ environment or `.env`, which scripts/wp-up.sh writes.
 
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -32,10 +33,21 @@ async def wordpress() -> AsyncIterator[WordPressClient]:
         await client.aclose()
 
 
+@dataclass
+class Cleanup:
+    """Ids registered here are deleted after the test, even when it fails."""
+
+    posts: list[int] = field(default_factory=list)
+    tags: list[int] = field(default_factory=list)
+
+
 @pytest.fixture
-async def cleanup(wordpress: WordPressClient) -> AsyncIterator[list[int]]:
-    """Post ids added here are deleted after the test."""
-    post_ids: list[int] = []
-    yield post_ids
-    for post_id in post_ids:
-        await wordpress._http.delete(f"/posts/{post_id}", params={"force": "true"})
+async def cleanup(wordpress: WordPressClient) -> AsyncIterator[Cleanup]:
+    created = Cleanup()
+    yield created
+    # The client has no delete methods on purpose (the agent never deletes), so the
+    # tests call the REST API directly here.
+    paths = [f"/posts/{i}" for i in created.posts] + [f"/tags/{i}" for i in created.tags]
+    for path in paths:
+        response = await wordpress._http.delete(path, params={"force": "true"})
+        assert response.status_code in {200, 404}, f"cleanup of {path}: {response.text}"
