@@ -2,6 +2,7 @@
 
 Runs stop at human approval, so no drafts are created in WordPress. They need a model
 API key and a reachable WordPress (scripts/wp-up.sh), because gather_context searches it.
+Models and limits come from .env like any other run; the report header records them.
 
     uv run python evals/run.py
 """
@@ -11,19 +12,24 @@ import asyncio
 import html
 import json
 import re
+import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from wp_content_agent.briefs import load_brief
+from wp_content_agent.errors import AgentError
 from wp_content_agent.runner import AgentRunner
-from wp_content_agent.schemas import RunSnapshot
+from wp_content_agent.schemas import Brief, RunSnapshot
 from wp_content_agent.settings import Settings
 
 HERE = Path(__file__).parent
+_HIDDEN = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_BLOCK_TAG = re.compile(r"</?(?:p|h[1-6]|li|ul|ol|blockquote|pre|br|hr)\b[^>]*>", re.IGNORECASE)
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -67,7 +73,8 @@ def result_from(name: str, snapshot: RunSnapshot, seconds: float) -> EvalResult:
 
 
 def render_markdown(results: list[EvalResult], settings: Settings, when: datetime) -> str:
-    passed = sum(r.review_passed for r in results)
+    completed = [r for r in results if r.error is None]
+    passed = sum(r.review_passed for r in completed)
     total_input = sum(r.input_tokens for r in results)
     cache_read = sum(r.cache_read_tokens for r in results)
     lines = [
@@ -84,39 +91,52 @@ def render_markdown(results: list[EvalResult], settings: Settings, when: datetim
     for r in results:
         review = "pass" if r.review_passed else ("error" if r.error else "fail")
         lines.append(
-            f"| {r.brief} | {review} | {r.revisions} | {', '.join(r.failed_checks) or '-'} "
+            f"| {_cell(r.brief)} | {review} | {r.revisions} "
+            f"| {_cell(', '.join(r.failed_checks) or '-')} "
             f"| {r.words} | {r.meta_chars} | {r.input_tokens:,} / {r.output_tokens:,} "
             f"| {r.cache_read_tokens:,} | {r.cost_usd:.4f} | {r.seconds} |"
         )
     share = cache_read / total_input if total_input else 0.0
-    count = len(results) or 1
+    count = len(completed) or 1
     lines += [
         "",
-        f"Pass rate: {passed}/{len(results)}. "
-        f"Average revisions: {sum(r.revisions for r in results) / count:.1f}. "
+        f"Pass rate: {passed}/{len(completed)} completed runs "
+        f"({len(results) - len(completed)} errors). "
+        f"Average revisions: {sum(r.revisions for r in completed) / count:.1f}. "
         f"Total cost: ${sum(r.cost_usd for r in results):.4f}. "
         f"Cache reads: {cache_read:,} of {total_input:,} input tokens ({share:.0%}).",
     ]
     errors = [r for r in results if r.error]
     if errors:
         lines += ["", "Errors:", ""]
-        lines += [f"- {r.brief}: {r.error}" for r in errors]
+        lines += [f"- {r.brief}: {' '.join(str(r.error).split())}" for r in errors]
     return "\n".join(lines) + "\n"
 
 
-async def run_all(briefs: list[Path], settings: Settings) -> list[EvalResult]:
+async def run_all(
+    briefs: dict[str, Brief],
+    settings: Settings,
+    timeout_s: float,
+    on_result: Callable[[list[EvalResult]], None],
+) -> list[EvalResult]:
     results: list[EvalResult] = []
     async with AgentRunner.open(settings) as runner:
         # One after another, so later briefs can reuse the cached prompt prefixes.
-        for path in briefs:
-            brief = load_brief(path)
-            print(f"{path.stem}: {brief.topic}", flush=True)
+        for name, brief in briefs.items():
+            print(f"{name}: {brief.topic}", flush=True)
             started = time.monotonic()
-            run_id = f"eval-{path.stem}-{uuid.uuid4().hex[:6]}"
-            snapshot = await runner.start(brief, run_id=run_id)
-            result = result_from(path.stem, snapshot, time.monotonic() - started)
+            run_id = f"eval-{name}-{uuid.uuid4().hex[:6]}"
+            try:
+                async with asyncio.timeout(timeout_s):
+                    snapshot = await runner.start(brief, run_id=run_id)
+                result = result_from(name, snapshot, time.monotonic() - started)
+            except (AgentError, TimeoutError) as exc:
+                error = str(exc) or f"timed out after {timeout_s:g} s"
+                result = EvalResult(name, "failed", False, 0, error=error)
             print(f"  {result.status}, review passed: {result.review_passed}", flush=True)
             results.append(result)
+            # Written after every brief, so a crash or Ctrl-C keeps what was already paid for.
+            on_result(results)
     return results
 
 
@@ -124,20 +144,38 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--briefs", type=Path, default=HERE / "briefs")
     parser.add_argument("--out", type=Path, default=HERE / "results.md")
+    parser.add_argument("--timeout", type=float, default=600, help="seconds per brief")
     args = parser.parse_args()
 
-    briefs = sorted(args.briefs.glob("*.yaml"))
+    paths = sorted(args.briefs.glob("*.yaml"))
+    if not paths:
+        sys.exit(f"no briefs found in {args.briefs}")
+    try:
+        # All briefs are validated before any model call is paid for.
+        briefs = {path.stem: load_brief(path) for path in paths}
+    except AgentError as exc:
+        sys.exit(f"error: {exc}")
+    when = datetime.now(UTC)
+
     with tempfile.TemporaryDirectory() as tmp:
         settings = Settings(checkpoint_db=Path(tmp) / "evals.sqlite")
-        results = asyncio.run(run_all(briefs, settings))
-    args.out.write_text(render_markdown(results, settings, datetime.now(UTC)))
-    raw = [asdict(r) for r in results]
-    args.out.with_suffix(".json").write_text(json.dumps(raw, indent=2) + "\n")
+
+        def write(results: list[EvalResult]) -> None:
+            args.out.write_text(render_markdown(results, settings, when))
+            raw = [asdict(r) for r in results]
+            args.out.with_suffix(".json").write_text(json.dumps(raw, indent=2) + "\n")
+
+        asyncio.run(run_all(briefs, settings, args.timeout, write))
     print(f"wrote {args.out}")
 
 
 def _words(content_html: str) -> int:
-    return len(html.unescape(_TAG.sub(" ", content_html)).split())
+    text = _TAG.sub("", _BLOCK_TAG.sub(" ", _HIDDEN.sub(" ", content_html)))
+    return len(html.unescape(text).split())
+
+
+def _cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from evals.run import EvalResult, render_markdown, result_from
+from evals.run import EvalResult, _words, render_markdown, result_from
 from wp_content_agent.briefs import load_brief
 from wp_content_agent.schemas import ApprovalRequest, NodeUsage, RunSnapshot, RunStatus
 from wp_content_agent.settings import Settings
@@ -87,7 +87,8 @@ def test_render_markdown_reports_pass_rate_cost_and_cache_share() -> None:
     assert "Run on 2026-10-18 09:30 UTC" in text
     assert "| b | fail | 2 | meta_length |" in text
     assert "| c | error |" in text
-    assert "Pass rate: 1/3. Average revisions: 0.7. Total cost: $0.5000." in text
+    assert "Pass rate: 1/2 completed runs (1 errors). Average revisions: 1.0." in text
+    assert "Total cost: $0.5000." in text
     assert "Cache reads: 150 of 400 input tokens (38%)." in text
     assert "- c: boom" in text
 
@@ -97,4 +98,19 @@ def test_render_markdown_without_results_does_not_divide_by_zero() -> None:
 
     text = render_markdown([], settings, datetime(2026, 10, 18, tzinfo=UTC))
 
-    assert "Pass rate: 0/0." in text
+    assert "Pass rate: 0/0 completed runs (0 errors)." in text
+
+
+def test_render_markdown_escapes_table_cells() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    results = [EvalResult("a|b", "awaiting_approval", False, 1, ["x|y"])]
+
+    text = render_markdown(results, settings, datetime(2026, 10, 18, tzinfo=UTC))
+
+    assert r"| a\|b | fail | 1 | x\|y |" in text
+
+
+def test_words_ignores_inline_tags_and_scripts() -> None:
+    content = "<p>re<em>use</em>d foo<code>bar</code></p><p>two</p><script>var x = 1</script>"
+
+    assert _words(content) == 3
