@@ -8,8 +8,8 @@ class WPSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="WP_", env_file=".env", extra="ignore")
 
     base_url: str = "http://localhost:8080"
-    username: str
-    app_password: SecretStr
+    username: str = Field(min_length=1)
+    app_password: SecretStr = Field(min_length=1)
     timeout_s: float = 15
     max_retries: int = 3
     backoff_s: float = 0.5
