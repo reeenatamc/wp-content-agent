@@ -209,3 +209,7 @@ strict mode and pytest on every push.
   even though they do not call a model.
 - Number checks catch invented statistics, not invented claims without numbers; that part
   rests on the model reviewer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
