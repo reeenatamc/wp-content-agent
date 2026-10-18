@@ -50,9 +50,9 @@ def usage_from_messages(
         if isinstance(message, AIMessage) and message.usage_metadata:
             input_tokens += message.usage_metadata["input_tokens"]
             output_tokens += message.usage_metadata["output_tokens"]
-            details = message.usage_metadata.get("input_token_details", {})
-            cache_read += details.get("cache_read", 0)
-            cache_write += details.get("cache_creation", 0)
+            details = message.usage_metadata.get("input_token_details") or {}
+            cache_read += details.get("cache_read") or 0
+            cache_write += details.get("cache_creation") or 0
     usage = NodeUsage(
         node=node,
         model=model,

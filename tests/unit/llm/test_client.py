@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from tests.fakes import PRICES, FakeChatModel, ai, fake_client
 from wp_content_agent.errors import LLMError
 from wp_content_agent.llm import ModelClient, estimate_cost
-from wp_content_agent.settings import ModelPrice
+from wp_content_agent.settings import ModelPrice, Settings
 
 
 class Answer(BaseModel):
@@ -70,12 +70,20 @@ def test_cost_prices_cached_tokens_with_explicit_prices() -> None:
     assert cost == pytest.approx((200 * 2.0 + 600 * 0.5 + 200 * 3.0 + 100 * 10.0) / 1_000_000)
 
 
-def test_cost_cache_prices_default_to_input_multiples() -> None:
+def test_cost_cache_prices_default_to_input_price() -> None:
     prices = {"m": ModelPrice(input=2.0, output=10.0)}
 
     cost = estimate_cost("m", 1000, 0, prices, cache_read_tokens=600, cache_write_tokens=200)
 
-    assert cost == pytest.approx((200 * 2.0 + 600 * 0.2 + 200 * 2.5) / 1_000_000)
+    assert cost == pytest.approx(1000 * 2.0 / 1_000_000)
+
+
+def test_default_claude_prices_include_cache_rates() -> None:
+    prices = Settings(_env_file=None).model_prices  # type: ignore[call-arg]
+
+    sonnet = prices["claude-sonnet-5-5"]
+
+    assert (sonnet.cache_read_price, sonnet.cache_write_price) == (0.2, 2.5)
 
 
 def test_cost_uncached_input_floors_at_zero() -> None:
@@ -83,7 +91,7 @@ def test_cost_uncached_input_floors_at_zero() -> None:
 
     cost = estimate_cost("m", 10, 0, prices, cache_read_tokens=20)
 
-    assert cost == pytest.approx(20 * 0.1 / 1_000_000)
+    assert cost == pytest.approx(20 * 1.0 / 1_000_000)
 
 
 def test_usage_sums_cache_tokens_from_input_token_details() -> None:
@@ -93,6 +101,16 @@ def test_usage_sums_cache_tokens_from_input_token_details() -> None:
 
     assert (usage.cache_read_tokens, usage.cache_write_tokens) == (5, 2)
     assert usage.input_tokens == 20
+
+
+def test_usage_tolerates_null_token_details() -> None:
+    message = ai()
+    assert message.usage_metadata is not None
+    message.usage_metadata["input_token_details"] = {"cache_read": None}  # type: ignore[typeddict-item]
+
+    usage = fake_client().usage("n", [message])
+
+    assert usage.cache_read_tokens == 0
 
 
 def test_usage_without_token_details_has_no_cache_tokens() -> None:

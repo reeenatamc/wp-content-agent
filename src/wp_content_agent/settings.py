@@ -14,7 +14,7 @@ _ANTHROPIC_DEFAULTS = {"writer": "claude-sonnet-5-5", "reviewer": "claude-haiku-
 
 
 class ModelPrice(BaseModel):
-    """USD per million tokens. Cache defaults follow Anthropic's 5-minute cache pricing."""
+    """USD per million tokens. Unset cache prices fall back to the plain input price."""
 
     input: float = Field(ge=0)
     output: float = Field(ge=0)
@@ -23,18 +23,19 @@ class ModelPrice(BaseModel):
 
     @property
     def cache_read_price(self) -> float:
-        return self.cache_read if self.cache_read is not None else self.input * 0.1
+        return self.cache_read if self.cache_read is not None else self.input
 
     @property
     def cache_write_price(self) -> float:
-        return self.cache_write if self.cache_write is not None else self.input * 1.25
+        return self.cache_write if self.cache_write is not None else self.input
 
 
 def _default_prices() -> dict[str, ModelPrice]:
     return {
-        "claude-sonnet-5-5": ModelPrice(input=2.0, output=10.0),
-        "claude-haiku-5-5": ModelPrice(input=0.10, output=0.50),
-        "claude-opus-5-5": ModelPrice(input=4.0, output=20.0),
+        # Anthropic 5-minute cache: reads at 0.1x input, writes at 1.25x.
+        "claude-sonnet-5-5": ModelPrice(input=2.0, output=10.0, cache_read=0.2, cache_write=2.5),
+        "claude-haiku-5-5": ModelPrice(input=0.10, output=0.50, cache_read=0.01, cache_write=0.125),
+        "claude-opus-5-5": ModelPrice(input=4.0, output=20.0, cache_read=0.4, cache_write=5.0),
     }
 
 
