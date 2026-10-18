@@ -115,6 +115,10 @@ def create_app(
     ) -> RunSnapshot:
         return await decide(runs, run_id, False, body)
 
+    @router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+    async def retry_run(run_id: str, runs: Service) -> RunSnapshot:
+        return await runs.retry(run_id)
+
     app.include_router(router)
 
     @app.post(

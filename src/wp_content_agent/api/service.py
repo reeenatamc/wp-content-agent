@@ -65,6 +65,25 @@ class RunService:
         self._spawn(run_id, self._runner.resume(run_id, decision))
         return snapshot.model_copy(update={"approval": None})
 
+    async def retry(self, run_id: str) -> RunSnapshot:
+        if run_id in self._busy:
+            raise RunStateError(f"run {run_id} is still running")
+        self._busy.add(run_id)
+        try:
+            snapshot = await self._runner.get(run_id)
+            if not snapshot.can_retry:
+                raise RunStateError(
+                    f"run {run_id} cannot be retried; only a run that failed while creating"
+                    " the draft can"
+                )
+        except BaseException:
+            self._busy.discard(run_id)
+            raise
+        self._spawn(run_id, self._runner.retry(run_id))
+        return snapshot.model_copy(
+            update={"status": RunStatus.PUBLISHING, "error": None, "can_retry": False}
+        )
+
     async def get(self, run_id: str) -> RunSnapshot:
         try:
             return await self._runner.get(run_id)

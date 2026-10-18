@@ -31,6 +31,8 @@ class AgentState(TypedDict, total=False):
     # Problems that did not stop the run but the person should hear about.
     warnings: Annotated[list[str], operator.add]
     error: str
+    # The node that raised, set when a run is marked failed.
+    failed_node: str
 
 
 def next_revision_count(state: AgentState) -> int:

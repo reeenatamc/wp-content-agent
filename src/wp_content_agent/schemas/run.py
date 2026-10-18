@@ -62,6 +62,8 @@ class RunSnapshot(BaseModel):
     revision_count: int = 0
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
+    # True when only publish_draft failed, so it can run again without new model calls.
+    can_retry: bool = False
     usage: list[NodeUsage] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
