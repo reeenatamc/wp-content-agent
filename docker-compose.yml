@@ -1,0 +1,67 @@
+# Local WordPress for the demo and the integration tests. Not for production:
+# the database password and admin login below are local defaults you can override.
+services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: ${WP_DB_PASSWORD:-wordpress}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  wordpress:
+    image: wordpress:6.8.3-php8.3-apache
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WP_PORT:-8080}:80"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wordpress}
+      WORDPRESS_DB_NAME: wordpress
+      # Application passwords need HTTPS unless the site is marked as local.
+      WORDPRESS_CONFIG_EXTRA: define('WP_ENVIRONMENT_TYPE', 'local');
+    volumes:
+      - wp-data:/var/www/html
+      - ./docker/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "-o", "/dev/null", "http://localhost/wp-includes/images/blank.gif"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # One-off setup: install WordPress, seed content, print an application password.
+  # Run with: docker compose run --rm setup
+  setup:
+    image: wordpress:cli-2.12.0-php8.3
+    profiles: ["setup"]
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    user: "33:33"  # www-data in the wordpress image, so files stay writable
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wordpress}
+      WORDPRESS_DB_NAME: wordpress
+      WP_URL: http://localhost:${WP_PORT:-8080}
+      WP_ADMIN_USER: ${WP_ADMIN_USER:-admin}
+      WP_ADMIN_PASSWORD: ${WP_ADMIN_PASSWORD:-admin}
+      HOME: /tmp
+    volumes:
+      - wp-data:/var/www/html
+      - ./docker/setup.sh:/setup.sh:ro
+    entrypoint: ["sh", "/setup.sh"]
+
+volumes:
+  db-data:
+  wp-data:
