@@ -1,5 +1,8 @@
 import operator
-from typing import Annotated, TypedDict
+from enum import Enum
+from typing import Annotated, Any, TypedDict, get_args, get_type_hints
+
+from pydantic import BaseModel
 
 from wp_content_agent.schemas import (
     Brief,
@@ -43,3 +46,28 @@ def should_revise(state: AgentState, max_revisions: int) -> bool:
     if review is None:
         raise ValueError("review node finished without writing a review")
     return not review.passed and state.get("revision_count", 0) < max_revisions
+
+
+def checkpoint_types() -> list[type]:
+    """Every model and enum the state can hold, nested ones included.
+
+    The checkpointer only loads types on this list, so it is derived from AgentState
+    rather than kept by hand: a new field cannot be forgotten.
+    """
+    found: set[type] = set()
+
+    def visit(annotation: Any) -> None:
+        for arg in get_args(annotation):
+            visit(arg)
+        if not isinstance(annotation, type) or annotation in found:
+            return
+        if issubclass(annotation, BaseModel):
+            found.add(annotation)
+            for info in annotation.model_fields.values():
+                visit(info.annotation)
+        elif issubclass(annotation, Enum):
+            found.add(annotation)
+
+    for annotation in get_type_hints(AgentState, include_extras=True).values():
+        visit(annotation)
+    return sorted(found, key=lambda t: f"{t.__module__}.{t.__qualname__}")

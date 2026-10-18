@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
@@ -526,3 +527,13 @@ async def test_terms_repeated_across_pages_are_deduped(
 def test_term_pages_must_be_positive() -> None:
     with pytest.raises(ValueError):
         WPSettings(username="u", app_password="p", max_term_pages=0)  # type: ignore[arg-type]
+
+
+def test_empty_credentials_in_env_are_reported_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WP_USERNAME", "")
+    monkeypatch.setenv("WP_APP_PASSWORD", "")
+
+    with pytest.raises(ValidationError, match="username\n  Field required"):
+        WPSettings(_env_file=None)  # type: ignore[call-arg]

@@ -41,7 +41,9 @@ def _default_prices() -> dict[str, ModelPrice]:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # .env.example ships lines such as `ANTHROPIC_API_KEY=`. An empty value means unset,
+    # so it falls back to the default instead of becoming an empty key or token.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     llm_provider: LLMProvider = "anthropic"
     writer_model: str | None = None
@@ -72,17 +74,6 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, ge=0, le=65535)
     max_concurrent_runs: int = Field(default=3, ge=1)
     log_level: str = "INFO"
-
-    @field_validator(
-        "anthropic_api_key", "openai_api_key", "webhook_secret", "api_token", mode="before"
-    )
-    @classmethod
-    def _blank_secret_is_unset(cls, value: object) -> object:
-        # .env.example ships `ANTHROPIC_API_KEY=` and `WEBHOOK_SECRET=`. An empty value
-        # must mean "not set", or an empty API_TOKEN would accept an empty bearer token.
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
 
     @field_validator("log_level")
     @classmethod

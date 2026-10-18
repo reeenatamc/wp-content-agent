@@ -1,14 +1,26 @@
 import asyncio
-import logging
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from tests.fake_graph import BRIEF, DRAFT, fake_runner, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentState
 from wp_content_agent.runner import checkpoint_serializer
-from wp_content_agent.schemas import ApprovalDecision, RunStatus
+from wp_content_agent.schemas import (
+    ApprovalDecision,
+    Brief,
+    CheckResult,
+    Outline,
+    OutlineSection,
+    RelatedPost,
+    ResearchNotes,
+    Review,
+    RunStatus,
+    SourceNote,
+    Term,
+)
 
 
 async def test_start_pauses_for_approval_with_the_draft() -> None:
@@ -226,14 +238,47 @@ async def test_concurrent_approvals_publish_once() -> None:
     assert sum(isinstance(result, RunStateError) for result in results) == 1
 
 
-def test_checkpoint_serializer_loads_state_models_without_warnings(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    serde = checkpoint_serializer()
-    values = {"brief": BRIEF, "draft": DRAFT, "usage": [usage("plan")], "status": RunStatus.FAILED}
+def _full_state() -> dict[str, Any]:
+    brief = Brief.model_validate(
+        {**BRIEF.model_dump(), "source_urls": ["https://docs.example.com/cache/"]}
+    )
+    return {
+        "brief": brief,
+        "outline": Outline(
+            working_title="t",
+            angle="a",
+            sections=[
+                OutlineSection(heading="h", level=2, key_points=["p"]),
+                OutlineSection(heading="i", level=3, key_points=["q"]),
+            ],
+        ),
+        "context": ResearchNotes(
+            sources=[SourceNote(url="https://docs.example.com/cache/", title="t", facts=["f"])],
+            related_posts=[RelatedPost(id=1, title="t", link="https://x.test/t")],
+            categories=[Term(id=1, name="Backend", slug="backend")],
+        ),
+        "draft": DRAFT,
+        "review": Review(
+            passed=False, checks=[CheckResult(name="readability", passed=False)], fixes=["f"]
+        ),
+        "usage": [usage("plan")],
+        "status": RunStatus.AWAITING_APPROVAL,
+    }
 
-    with caplog.at_level(logging.WARNING):
-        loaded = serde.loads_typed(serde.dumps_typed(values))
+
+def test_checkpoint_serializer_round_trips_every_state_type() -> None:
+    serde = checkpoint_serializer()
+    values = _full_state()
+
+    loaded = serde.loads_typed(serde.dumps_typed(values))
 
     assert loaded == values
-    assert caplog.records == []
+
+
+def test_checkpoint_serializer_blocks_types_outside_the_state() -> None:
+    # Guards the test above: with an allowlist, unknown types do not load back as models.
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[RunStatus])
+
+    loaded = serde.loads_typed(serde.dumps_typed({"draft": DRAFT}))
+
+    assert loaded != {"draft": DRAFT}

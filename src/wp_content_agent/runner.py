@@ -13,7 +13,6 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command, StateSnapshot
 
-from wp_content_agent import schemas
 from wp_content_agent.errors import (
     AgentError,
     LLMError,
@@ -22,6 +21,7 @@ from wp_content_agent.errors import (
     RunStoppedError,
 )
 from wp_content_agent.graph import AgentContext, build_graph
+from wp_content_agent.graph.state import checkpoint_types
 from wp_content_agent.llm import build_model_client
 from wp_content_agent.nodes import NODES
 from wp_content_agent.schemas import (
@@ -46,8 +46,7 @@ def checkpoint_serializer() -> JsonPlusSerializer:
     LangGraph warns on unregistered types today and will refuse them later, which
     would make every waiting run impossible to resume.
     """
-    types = [getattr(schemas, name) for name in schemas.__all__]
-    return JsonPlusSerializer(allowed_msgpack_modules=[t for t in types if isinstance(t, type)])
+    return JsonPlusSerializer(allowed_msgpack_modules=checkpoint_types())
 
 
 class AgentRunner:
