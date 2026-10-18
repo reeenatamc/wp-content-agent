@@ -11,6 +11,7 @@ from wp_content_agent.cli.main import EXIT_FAILED, EXIT_OK, main
 from wp_content_agent.errors import LLMError
 from wp_content_agent.graph import AgentState
 from wp_content_agent.runner import AgentRunner
+from wp_content_agent.schemas import CheckResult, Review, RunStatus
 from wp_content_agent.settings import Settings
 
 BRIEF_YAML = """\
@@ -139,3 +140,42 @@ def test_reject_unknown_run_exits_with_error(capsys: pytest.CaptureFixture[str])
 
     assert code == EXIT_FAILED
     assert "no run with id missing" in capsys.readouterr().err
+
+
+def test_yes_does_not_approve_a_failed_review(brief: Path) -> None:
+    def review(state: AgentState) -> dict[str, Any]:
+        check = CheckResult(name="structure", passed=False, note="no conclusion")
+        done = state.get("revision_count", 0) >= 2
+        status = RunStatus.AWAITING_APPROVAL if done else RunStatus.WRITING
+        return {"review": Review(passed=False, checks=[check], fixes=[]), "status": status}
+
+    code, output = _cli(["run", "--brief", str(brief), "--yes"], fake_runner(review=review))
+
+    assert code == EXIT_OK
+    assert "--yes does not approve it" in output
+    assert "waiting for approval" in output
+
+
+def test_end_of_input_leaves_run_pending(brief: Path) -> None:
+    def closed(prompt: str) -> str:
+        raise EOFError
+
+    out = io.StringIO()
+    code = main(
+        ["run", "--brief", str(brief)], open_runner=_opener(fake_runner()), ask=closed, out=out
+    )
+
+    assert code == EXIT_OK
+    assert "waiting for approval" in out.getvalue()
+
+
+def test_unknown_log_level_is_a_settings_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = fake_runner()
+    monkeypatch.setenv("LOG_LEVEL", "verbose")
+
+    code, _ = _cli(["status", "r1"], runner)
+
+    assert code == EXIT_FAILED
+    assert "unknown log level" in capsys.readouterr().err

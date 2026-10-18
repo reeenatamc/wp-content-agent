@@ -49,3 +49,11 @@ def test_schema_errors_name_the_field(tmp_path: Path) -> None:
 
     with pytest.raises(BriefError, match=r"audience: .*unknown: "):
         load_brief(path)
+
+
+def test_non_utf8_file_raises_brief_error(tmp_path: Path) -> None:
+    path = tmp_path / "latin1.yaml"
+    path.write_bytes("topic: Caché\n".encode("latin-1"))
+
+    with pytest.raises(BriefError, match="cannot read brief"):
+        load_brief(path)

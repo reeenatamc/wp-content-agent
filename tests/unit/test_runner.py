@@ -90,7 +90,7 @@ async def test_resume_unknown_run_raises_not_found() -> None:
         await runner.resume("missing", ApprovalDecision(approved=True))
 
 
-async def test_node_failure_marks_run_failed_and_keepsusage() -> None:
+async def test_node_failure_marks_run_failed_and_keeps_usage() -> None:
     def write(state: AgentState) -> dict[str, Any]:
         raise LLMError("write: output did not match Draft", usage("write"))
 

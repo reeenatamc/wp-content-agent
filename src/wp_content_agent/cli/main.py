@@ -20,12 +20,13 @@ from wp_content_agent.schemas import ApprovalDecision, ApprovalRequest, RunSnaps
 from wp_content_agent.settings import Settings
 
 OpenRunner = Callable[[Settings], AbstractAsyncContextManager[AgentRunner]]
-# Reads one line of input; None means there is no terminal to ask.
+# Reads one line of input, like input(). Commands get None when there is no terminal.
 Ask = Callable[[str], str]
 
 EXIT_OK, EXIT_FAILED = 0, 1
 PREVIEW_CHARS = 600
 
+_HIDDEN = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -46,7 +47,7 @@ def main(
         print(f"error: invalid settings: {exc}", file=sys.stderr)
         return EXIT_FAILED
     logging.basicConfig(
-        level=settings.log_level.upper(),
+        level=settings.log_level,
         stream=sys.stderr,
         format="%(levelname)s %(name)s: %(message)s",
     )
@@ -147,10 +148,22 @@ def _decision(
 ) -> ApprovalDecision | None:
     _show_approval(request, out)
     if auto_approve:
+        if not request.review_passed:
+            # --yes is for unattended demos; a draft that failed review needs a person.
+            print("review failed, so --yes does not approve it", file=out)
+            return None
         print("approved with --yes", file=out)
         return ApprovalDecision(approved=True)
     if ask is None:
         return None
+    try:
+        return _ask_decision(request, ask, out)
+    except EOFError:
+        print(file=out)
+        return None
+
+
+def _ask_decision(request: ApprovalRequest, ask: Ask, out: TextIO) -> ApprovalDecision | None:
     while True:
         answer = ask("create the draft? [a]pprove, [r]eject, [v]iew HTML, [l]ater: ").strip()
         match answer.lower()[:1]:
@@ -185,7 +198,7 @@ def _show_approval(request: ApprovalRequest, out: TextIO) -> None:
 
 
 def _preview(content_html: str) -> str:
-    text = html.unescape(_TAG.sub(" ", content_html))
+    text = html.unescape(_TAG.sub(" ", _HIDDEN.sub(" ", content_html)))
     text = " ".join(text.split())
     return text if len(text) <= PREVIEW_CHARS else f"{text[:PREVIEW_CHARS].rstrip()}..."
 
@@ -193,10 +206,12 @@ def _preview(content_html: str) -> str:
 def _progress(out: TextIO) -> Callable[[str, Mapping[str, Any]], None]:
     def report(node: str, update: Mapping[str, Any]) -> None:
         cost = ""
-        for entry in update.get("usage", []):
-            cost = f"  {entry.input_tokens + entry.output_tokens:>7,} tok  ${entry.cost_usd:.4f}"
-            if entry.cache_read_tokens:
-                cost += f"  cache read {entry.cache_read_tokens:,}"
+        if entries := update.get("usage", []):
+            tokens = sum(entry.input_tokens + entry.output_tokens for entry in entries)
+            cached = sum(entry.cache_read_tokens for entry in entries)
+            cost = f"  {tokens:>7,} tok  ${sum(entry.cost_usd for entry in entries):.4f}"
+            if cached:
+                cost += f"  cache read {cached:,}"
         print(f"  {node:<15} {_detail(node, update)}{cost}", file=out, flush=True)
 
     return report
