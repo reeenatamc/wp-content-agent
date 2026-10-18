@@ -56,11 +56,12 @@ async def test_duplicate_tag_names_are_sent_once() -> None:
     gateway = FakeGateway(tags=[])
 
     await publish_draft(
-        _state(tag_names=["Django", "django ", "caching"]),  # type: ignore[arg-type]
+        _state(tag_names=["Django", "django ", "Caching", "caching"]),  # type: ignore[arg-type]
         runtime(wordpress=gateway),
     )
 
     assert gateway.created[0]["tags"] == [4, 100]
+    assert [args for name, args in gateway.calls if name == "create_tag"] == ["Caching"]
 
 
 async def test_unsaved_meta_description_adds_warning() -> None:
@@ -80,8 +81,11 @@ async def test_non_draft_status_from_wordpress_raises() -> None:
             created = await super().create_draft_post(**fields)
             return created.model_copy(update={"status": "publish"})
 
-    with pytest.raises(ToolError, match="instead of draft"):
-        await publish_draft(_state(), runtime(wordpress=Published()))  # type: ignore[arg-type]
+    update = await publish_draft(_state(), runtime(wordpress=Published()))  # type: ignore[arg-type]
+
+    assert update["status"] == RunStatus.FAILED
+    assert update["wp_post_id"] == 8
+    assert "instead of draft" in update["error"]
 
 
 async def test_create_draft_failure_propagates() -> None:

@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunStatus(StrEnum):
@@ -42,6 +42,9 @@ class ApprovalRequest(BaseModel):
 
 class ApprovalDecision(BaseModel):
     """The value a run is resumed with after human_approval."""
+
+    # Strict, so a string such as "yes" can never count as an approval.
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     approved: bool
     note: str = Field(default="", max_length=2000)

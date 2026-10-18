@@ -7,6 +7,7 @@ from langgraph.types import Command
 
 from tests.unit.nodes.helpers import runtime
 from tests.unit.nodes.test_review import ALL_PASS, GOOD
+from wp_content_agent.errors import AgentError
 from wp_content_agent.graph import AgentContext, AgentState
 from wp_content_agent.nodes.human_approval import approval_request, human_approval
 from wp_content_agent.nodes.review import combine
@@ -60,5 +61,5 @@ async def test_invalid_resume_value_raises_agent_error() -> None:
     graph, config, ctx = _graph(), {"configurable": {"thread_id": "t"}}, runtime().context
     await graph.ainvoke(_state(), config, context=ctx)
 
-    with pytest.raises(Exception, match="invalid approval decision"):
-        await graph.ainvoke(Command(resume={"approved": "maybe"}), config, context=ctx)
+    with pytest.raises(AgentError, match="invalid approval decision"):
+        await graph.ainvoke(Command(resume={"approved": "yes"}), config, context=ctx)

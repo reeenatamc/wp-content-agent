@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
     usage: Annotated[list[NodeUsage], operator.add]
     # Problems that did not stop the run but the person should hear about.
     warnings: Annotated[list[str], operator.add]
+    error: str
 
 
 def next_revision_count(state: AgentState) -> int:

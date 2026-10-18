@@ -33,7 +33,15 @@ async def publish_draft(state: AgentState, runtime: Runtime[AgentContext]) -> di
         meta_description=draft.meta_description,
     )
     if created.status != "draft":
-        raise ToolError(f"WordPress returned status {created.status!r} instead of draft")
+        # Keep the id so the post can be found, but do not report success.
+        message = f"WordPress returned status {created.status!r} instead of draft"
+        logger.error("post %s: %s", created.id, message)
+        return {
+            "wp_post_id": created.id,
+            "edit_url": created.edit_url,
+            "status": RunStatus.FAILED,
+            "error": message,
+        }
     if draft.meta_description and not created.meta_description_saved:
         warnings.append(
             "WordPress did not store the meta description; install the wpagent-meta "
@@ -54,7 +62,8 @@ async def _resolve_tags(
     known = {tag.name.casefold(): tag.id for tag in notes.tags}
     ids: list[int] = []
     warnings: list[str] = []
-    for name in dict.fromkeys(n.strip() for n in names if n.strip()):
+    unique = {n.strip().casefold(): n.strip() for n in reversed(names) if n.strip()}
+    for name in reversed(unique.values()):
         tag_id = known.get(name.casefold())
         if tag_id is None:
             try:
