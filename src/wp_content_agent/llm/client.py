@@ -14,6 +14,7 @@ from wp_content_agent.schemas import NodeUsage
 from wp_content_agent.settings import ModelPrice
 
 # Base classes on purpose: openai raises LengthFinishReasonError and similar outside APIError.
+_LIMIT_MESSAGE = "output hit the token limit (LLM_MAX_TOKENS)"
 _PROVIDER_ERRORS = (anthropic.AnthropicError, openai.OpenAIError, OutputParserException)
 
 
@@ -55,6 +56,9 @@ class ModelClient:
         )
         try:
             result = cast(dict[str, Any], await runnable.ainvoke(list(messages)))
+        except openai.LengthFinishReasonError as exc:
+            # OpenAI raises instead of returning a cut-off message.
+            raise LLMError(f"{node}: {_LIMIT_MESSAGE}") from exc
         except _PROVIDER_ERRORS as exc:
             raise LLMError(f"{node}: model call failed: {exc}") from exc
 
@@ -63,18 +67,36 @@ class ModelClient:
         parsed = result.get("parsed")
         error = result.get("parsing_error")
         if error is not None or not isinstance(parsed, schema):
+            # Checked before the parse error: a cut-off reply usually fails to parse too.
+            reason = _stop_reason(raw)
+            if reason == "length":
+                raise LLMError(f"{node}: {_LIMIT_MESSAGE}", usage)
+            if reason == "refusal":
+                raise LLMError(f"{node}: the model refused to answer", usage)
             raise LLMError(f"{node}: output did not match {schema.__name__}: {error}", usage)
         return parsed, usage
 
-    async def chat(self, messages: Sequence[BaseMessage], tools: Sequence[Any] = ()) -> AIMessage:
+    async def chat(
+        self, messages: Sequence[BaseMessage], tools: Sequence[Any] = (), *, node: str
+    ) -> AIMessage:
         model = self.chat_model.bind_tools(list(tools)) if tools else self.chat_model
         try:
             return await model.ainvoke(list(messages))
         except _PROVIDER_ERRORS as exc:
-            raise LLMError(f"model call failed: {exc}") from exc
+            raise LLMError(f"{node}: model call failed: {exc}") from exc
 
     def usage(self, node: str, messages: Sequence[BaseMessage]) -> NodeUsage:
         return usage_from_messages(node, self.model_name, messages, self._prices)
+
+
+def _stop_reason(raw: AIMessage) -> str | None:
+    """Why the provider stopped, normalized: "length" (cut off), "refusal" or None."""
+    meta = raw.response_metadata
+    if meta.get("stop_reason") == "max_tokens" or meta.get("finish_reason") == "length":
+        return "length"
+    if meta.get("stop_reason") == "refusal" or meta.get("finish_reason") == "content_filter":
+        return "refusal"
+    return None
 
 
 def _cached_block(text: str) -> dict[str, Any]:

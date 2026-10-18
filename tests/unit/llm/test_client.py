@@ -1,12 +1,18 @@
+import logging
+from typing import Any
+
 import anthropic
 import httpx
+import openai
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel
 
 from tests.fakes import PRICES, FakeChatModel, ai, fake_client
 from wp_content_agent.errors import LLMError
-from wp_content_agent.llm import ModelClient, estimate_cost
+from wp_content_agent.llm import ModelClient, estimate_cost, merge_usage
+from wp_content_agent.llm import usage as usage_module
 from wp_content_agent.settings import ModelPrice, Settings
 
 
@@ -38,8 +44,8 @@ async def test_provider_errors_become_llm_errors() -> None:
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     client = fake_client(anthropic.APIConnectionError(request=request))
 
-    with pytest.raises(LLMError, match="model call failed"):
-        await client.chat([HumanMessage("q")])
+    with pytest.raises(LLMError, match="gather_context: model call failed"):
+        await client.chat([HumanMessage("q")], node="gather_context")
 
 
 def test_usage_sums_tokens_across_messages() -> None:
@@ -148,3 +154,102 @@ def test_human_is_cached_only_when_asked_and_enabled() -> None:
         {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}
     ]
     assert (unmarked.content, disabled.content) == ("task", "task")
+
+
+class _UnparsedModel(FakeChatModel):
+    """Structured output that returns no parsed value and no parsing error."""
+
+    def with_structured_output(  # type: ignore[override]
+        self, schema: type[BaseModel], **kwargs: Any
+    ) -> Runnable[Any, dict[str, Any]]:
+        def run(messages: list[BaseMessage]) -> dict[str, Any]:
+            raw = self._next(messages)
+            return {"raw": raw, "parsed": None, "parsing_error": None}
+
+        return RunnableLambda(run)
+
+
+def _unparsed_client(raw: AIMessage) -> ModelClient:
+    model = _UnparsedModel.scripted(raw)
+    return ModelClient(model, "fake-model", PRICES)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"stop_reason": "max_tokens"}, {"finish_reason": "length"}],
+)
+async def test_structured_reports_truncated_output(metadata: dict[str, str]) -> None:
+    client = _unparsed_client(ai(response_metadata=metadata))
+
+    with pytest.raises(LLMError, match="plan: output hit the token limit") as info:
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+    assert info.value.usage is not None
+    assert info.value.usage.input_tokens == 10
+
+
+async def test_structured_reports_truncated_json_despite_the_parse_error() -> None:
+    client = fake_client(ai('{"value": "o', response_metadata={"stop_reason": "max_tokens"}))
+
+    with pytest.raises(LLMError, match="plan: output hit the token limit"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+async def test_structured_reports_openai_length_error() -> None:
+    completion = openai.types.chat.ChatCompletion.model_construct(choices=[], usage=None)
+    client = fake_client(openai.LengthFinishReasonError(completion=completion))
+
+    with pytest.raises(LLMError, match="plan: output hit the token limit"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+@pytest.mark.parametrize(
+    "metadata", [{"stop_reason": "refusal"}, {"finish_reason": "content_filter"}]
+)
+async def test_structured_reports_refusal(metadata: dict[str, str]) -> None:
+    client = _unparsed_client(ai(response_metadata=metadata))
+
+    with pytest.raises(LLMError, match="plan: the model refused"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+async def test_structured_without_parsed_output_keeps_generic_message() -> None:
+    client = _unparsed_client(ai(response_metadata={"stop_reason": "end_turn"}))
+
+    with pytest.raises(LLMError, match="plan: output did not match Answer: None"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+def test_missing_price_is_logged_once_per_model(caplog: pytest.LogCaptureFixture) -> None:
+    usage_module._warned_models.clear()
+    prices = {"m": ModelPrice(input=1, output=1)}
+
+    with caplog.at_level(logging.WARNING, logger=usage_module.logger.name):
+        estimate_cost("other", 1, 1, prices)
+        estimate_cost("other", 1, 1, prices)
+
+    assert [r.getMessage() for r in caplog.records].count(
+        "no price configured for model other; cost reported as 0"
+    ) == 1
+
+
+def test_merge_usage_sums_entries_for_the_same_node_and_model() -> None:
+    client = fake_client()
+    first = client.usage("n", [ai(tokens=(100, 20), cache=(4, 2))])
+    second = client.usage("n", [ai(tokens=(50, 10))])
+
+    merged = merge_usage(first, second)
+
+    assert (merged.input_tokens, merged.output_tokens) == (150, 30)
+    assert (merged.cache_read_tokens, merged.cache_write_tokens) == (4, 2)
+    assert merged.cost_usd == pytest.approx(first.cost_usd + second.cost_usd)
+
+
+def test_merge_usage_rejects_different_nodes_or_models() -> None:
+    client = fake_client()
+    first = client.usage("a", [ai()])
+
+    with pytest.raises(ValueError, match="cannot merge"):
+        merge_usage(first, client.usage("b", [ai()]))
+    with pytest.raises(ValueError, match="cannot merge"):
+        merge_usage(first, first.model_copy(update={"model": "other"}))
