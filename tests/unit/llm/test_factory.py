@@ -39,6 +39,14 @@ def test_missing_api_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) ->
         build_model_client(settings, "writer")
 
 
+def test_empty_api_key_counts_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    settings = Settings(_env_file=None)
+
+    with pytest.raises(LLMError, match="ANTHROPIC_API_KEY"):
+        build_model_client(settings, "writer")
+
+
 def test_cache_prompts_enabled_only_for_anthropic() -> None:
     anthropic_settings = Settings(_env_file=None, anthropic_api_key="test")
     openai_settings = Settings(

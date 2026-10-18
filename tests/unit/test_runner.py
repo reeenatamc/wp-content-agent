@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from tests.fake_graph import BRIEF, DRAFT, fake_runner, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentState
+from wp_content_agent.runner import checkpoint_serializer
 from wp_content_agent.schemas import ApprovalDecision, RunStatus
 
 
@@ -222,3 +224,16 @@ async def test_concurrent_approvals_publish_once() -> None:
 
     assert published == 1
     assert sum(isinstance(result, RunStateError) for result in results) == 1
+
+
+def test_checkpoint_serializer_loads_state_models_without_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    serde = checkpoint_serializer()
+    values = {"brief": BRIEF, "draft": DRAFT, "usage": [usage("plan")], "status": RunStatus.FAILED}
+
+    with caplog.at_level(logging.WARNING):
+        loaded = serde.loads_typed(serde.dumps_typed(values))
+
+    assert loaded == values
+    assert caplog.records == []

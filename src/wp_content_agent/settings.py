@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = Field(default=3, ge=1)
     log_level: str = "INFO"
 
+    @field_validator(
+        "anthropic_api_key", "openai_api_key", "webhook_secret", "api_token", mode="before"
+    )
+    @classmethod
+    def _blank_secret_is_unset(cls, value: object) -> object:
+        # .env.example ships `ANTHROPIC_API_KEY=` and `WEBHOOK_SECRET=`. An empty value
+        # must mean "not set", or an empty API_TOKEN would accept an empty bearer token.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("log_level")
     @classmethod
     def _known_log_level(cls, value: str) -> str:
