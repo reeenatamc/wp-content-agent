@@ -69,6 +69,7 @@ uv run wpagent run --brief my-brief.yaml --yes                  # approve if rev
 uv run wpagent status <run_id>
 uv run wpagent approve <run_id> --note "looks good"
 uv run wpagent reject <run_id>
+uv run wpagent retry <run_id>                                   # run publish_draft again after it failed
 uv run wpagent serve                                            # HTTP API on :8000
 ```
 
@@ -100,6 +101,7 @@ limits are all settings: `.env.example` lists the common ones and
 | `GET` | `/runs/{id}` | Status, the draft waiting for approval, review result, usage and cost. |
 | `POST` | `/runs/{id}/approve` | Approve, with an optional note. The draft is created in the background. |
 | `POST` | `/runs/{id}/reject` | Reject. Nothing is created. |
+| `POST` | `/runs/{id}/retry` | Run `publish_draft` again for a run that failed there, using the approved draft. No model calls. |
 | `POST` | `/webhooks/n8n` | Same as `POST /runs`, authenticated with `X-Webhook-Secret`. |
 
 The `/runs` endpoints take `Authorization: Bearer $API_TOKEN` when `API_TOKEN` is set, and
@@ -193,8 +195,9 @@ strict mode and pytest on every push.
 
 - Rejecting a draft ends the run. There is no "revise with this feedback" path yet
   ([#8](https://github.com/reeenatamc/wp-content-agent/issues/8)).
-- A failed `publish_draft` cannot be retried; a new run is needed
-  ([#20](https://github.com/reeenatamc/wp-content-agent/issues/20)).
+- Only a run that failed inside `publish_draft` can be retried; other failures need a
+  new run. If the failed request timed out, WordPress may have created the post anyway,
+  so check the site before retrying.
 - If the process dies after WordPress creates the post but before the checkpoint is
   written, resuming creates a second draft.
 - The Gutenberg converter is tested against the block grammar, not against the editor
@@ -205,8 +208,8 @@ strict mode and pytest on every push.
   cacheable length, which is the case for short briefs.
 - The per-run lock that stops two approvals at once works inside one process. Running
   several API workers on the same checkpoint file is not supported.
-- `status`, `approve` and `reject` load the full configuration, including the model key,
-  even though they do not call a model.
+- `status`, `approve`, `reject` and `retry` load the full configuration, including the
+  model key, even though they do not call a model.
 - Number checks catch invented statistics, not invented claims without numbers; that part
   rests on the model reviewer.
 

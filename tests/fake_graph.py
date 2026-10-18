@@ -5,6 +5,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.fakes import fake_client
+from wp_content_agent.errors import ToolError
 from wp_content_agent.graph import AgentContext, AgentState, build_graph, next_revision_count
 from wp_content_agent.nodes import NODES
 from wp_content_agent.runner import AgentRunner
@@ -60,6 +61,24 @@ def fake_nodes(**overrides: Any) -> dict[str, Any]:
         "publish_draft": publish_draft,
     }
     return {**nodes, **overrides}
+
+
+def flaky_publish(failures: int = 1) -> Any:
+    """A publish_draft node that raises ToolError the first `failures` times, then succeeds."""
+    calls = 0
+
+    def publish_draft(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls <= failures:
+            raise ToolError("create_draft_post failed: timeout")
+        return {
+            "status": RunStatus.DRAFT_CREATED,
+            "wp_post_id": 8,
+            "edit_url": "https://wp.test/wp-admin/post.php?post=8&action=edit",
+        }
+
+    return publish_draft
 
 
 def fake_runner(**overrides: Any) -> AgentRunner:

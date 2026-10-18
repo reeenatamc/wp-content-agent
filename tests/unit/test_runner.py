@@ -4,10 +4,10 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-from tests.fake_graph import BRIEF, DRAFT, fake_runner, usage
+from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentState
-from wp_content_agent.runner import checkpoint_serializer
+from wp_content_agent.runner import AgentRunner, _config, checkpoint_serializer
 from wp_content_agent.schemas import (
     ApprovalDecision,
     Brief,
@@ -17,6 +17,7 @@ from wp_content_agent.schemas import (
     RelatedPost,
     ResearchNotes,
     Review,
+    RunSnapshot,
     RunStatus,
     SourceNote,
     Term,
@@ -236,6 +237,124 @@ async def test_concurrent_approvals_publish_once() -> None:
 
     assert published == 1
     assert sum(isinstance(result, RunStateError) for result in results) == 1
+
+
+async def _failed_at_publish(failures: int = 1) -> tuple[AgentRunner, RunSnapshot]:
+    runner = fake_runner(publish_draft=flaky_publish(failures))
+    await runner.start(BRIEF, run_id="r1")
+    return runner, await runner.resume("r1", ApprovalDecision(approved=True))
+
+
+async def test_publish_failure_can_be_retried() -> None:
+    runner, failed = await _failed_at_publish()
+
+    snapshot = await runner.retry("r1")
+
+    assert failed.can_retry is True
+    assert snapshot.status == RunStatus.DRAFT_CREATED
+    assert snapshot.wp_post_id == 8
+    assert snapshot.error is None
+    assert snapshot.can_retry is False
+
+
+async def test_retry_that_died_before_publishing_can_be_retried_again() -> None:
+    runner, _ = await _failed_at_publish()
+    # What retry writes before publish_draft runs, as if the process died right after.
+    await runner._graph.aupdate_state(
+        _config("r1"), {"status": RunStatus.PUBLISHING, "error": ""}, as_node="human_approval"
+    )
+
+    stuck = await runner.get("r1")
+    snapshot = await runner.retry("r1")
+
+    assert (stuck.status, stuck.can_retry) == (RunStatus.PUBLISHING, True)
+    assert snapshot.status == RunStatus.DRAFT_CREATED
+
+
+async def test_retry_runs_only_publish_and_spends_no_model_tokens() -> None:
+    runner, failed = await _failed_at_publish()
+    progress: list[str] = []
+
+    snapshot = await runner.retry("r1", on_progress=lambda node, update: progress.append(node))
+
+    assert progress == ["publish_draft"]
+    assert snapshot.usage == failed.usage
+
+
+async def test_retry_can_fail_again_and_be_retried_again() -> None:
+    runner, _ = await _failed_at_publish(failures=2)
+
+    second = await runner.retry("r1")
+    third = await runner.retry("r1")
+
+    assert (second.status, second.can_retry) == (RunStatus.FAILED, True)
+    assert third.status == RunStatus.DRAFT_CREATED
+
+
+async def test_retry_refuses_a_failure_in_another_node() -> None:
+    def review(state: AgentState) -> dict[str, Any]:
+        raise LLMError("review failed")
+
+    runner = fake_runner(review=review)
+    failed = await runner.start(BRIEF, run_id="r1")
+
+    with pytest.raises(RunStateError, match="cannot be retried"):
+        await runner.retry("r1")
+
+    assert failed.can_retry is False
+
+
+async def test_retry_refuses_a_post_that_came_back_non_draft() -> None:
+    def publish_draft(state: AgentState) -> dict[str, Any]:
+        return {"status": RunStatus.FAILED, "error": "not a draft", "wp_post_id": 8}
+
+    runner = fake_runner(publish_draft=publish_draft)
+    await runner.start(BRIEF, run_id="r1")
+    failed = await runner.resume("r1", ApprovalDecision(approved=True))
+
+    with pytest.raises(RunStateError, match="cannot be retried"):
+        await runner.retry("r1")
+
+    assert failed.can_retry is False
+
+
+async def test_retry_refuses_a_failed_publish_that_already_has_a_post() -> None:
+    runner, _ = await _failed_at_publish()
+    await runner._graph.aupdate_state(_config("r1"), {"wp_post_id": 8}, as_node="publish_draft")
+
+    with pytest.raises(RunStateError, match="cannot be retried"):
+        await runner.retry("r1")
+
+
+async def test_retry_refuses_runs_that_are_waiting_or_done() -> None:
+    runner = fake_runner()
+    waiting = await runner.start(BRIEF, run_id="r1")
+
+    with pytest.raises(RunStateError, match="cannot be retried"):
+        await runner.retry("r1")
+    done = await runner.resume("r1", ApprovalDecision(approved=True))
+    with pytest.raises(RunStateError, match="cannot be retried"):
+        await runner.retry("r1")
+
+    assert (waiting.can_retry, done.can_retry) == (False, False)
+
+
+async def test_retry_unknown_run_raises_not_found() -> None:
+    runner = fake_runner()
+
+    with pytest.raises(RunNotFoundError):
+        await runner.retry("missing")
+
+
+async def test_failure_records_the_node_that_raised() -> None:
+    def write(state: AgentState) -> dict[str, Any]:
+        raise LLMError("write failed")
+
+    runner = fake_runner(write=write)
+
+    await runner.start(BRIEF, run_id="r1")
+
+    assert (await runner._state("r1")).values["failed_node"] == "write"
 
 
 def _full_state() -> dict[str, Any]:

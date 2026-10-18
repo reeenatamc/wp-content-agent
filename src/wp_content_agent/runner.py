@@ -36,6 +36,9 @@ from wp_content_agent.tools.mcp_gateway import connect_wordpress
 
 logger = logging.getLogger(__name__)
 
+# PUBLISHING too: a retry that died before publish_draft finished can be retried again.
+_RETRYABLE = {RunStatus.FAILED, RunStatus.PUBLISHING}
+
 # Called after each node finishes, with the node name and the state update it returned.
 ProgressCallback = Callable[[str, Mapping[str, Any]], None]
 
@@ -112,6 +115,23 @@ class AgentRunner:
             payload: Command[Any] = Command(resume=decision.model_dump())
             return await self._drive(payload, run_id, on_progress)
 
+    async def retry(
+        self, run_id: str, *, on_progress: ProgressCallback | None = None
+    ) -> RunSnapshot:
+        """Run publish_draft again for a run that failed there, with the approved draft."""
+        async with self._lock(run_id):
+            ensure_can_retry(_snapshot(run_id, await self._state(run_id)))
+            logger.info("retrying publish for run %s", run_id)
+            # Written as the approval node, so the graph routes on to publish_draft.
+            # failed_node stays set: if the process dies before publish_draft finishes,
+            # the run is still retryable instead of stuck at publishing.
+            await self._graph.aupdate_state(
+                _config(run_id),
+                {"status": RunStatus.PUBLISHING, "error": ""},
+                as_node="human_approval",
+            )
+            return await self._drive(None, run_id, on_progress)
+
     async def get(self, run_id: str) -> RunSnapshot:
         return _snapshot(run_id, await self._state(run_id))
 
@@ -160,10 +180,28 @@ class AgentRunner:
         if isinstance(exc, LLMError) and exc.usage is not None:
             values["usage"] = [exc.usage]
         try:
+            # The node that raised is still pending; only publish_draft can be retried.
+            pending = (await self._graph.aget_state(config)).next
+        except Exception:
+            # Marking the run failed matters more than knowing where it stopped.
+            logger.warning("could not read where run %s stopped", run_id, exc_info=True)
+            pending = ()
+        if pending:
+            values["failed_node"] = pending[0]
+        try:
             # Written as the last node, so the run has no pending tasks and cannot resume.
             await self._graph.aupdate_state(config, values, as_node="publish_draft")
         except Exception:
             logger.exception("could not mark run %s as failed", run_id)
+
+
+def ensure_can_retry(snapshot: RunSnapshot) -> None:
+    """Raise RunStateError unless the run failed inside publish_draft. Nothing has run yet."""
+    if not snapshot.can_retry:
+        raise RunStateError(
+            f"run {snapshot.run_id} cannot be retried; only a run that failed while"
+            " creating the draft can"
+        )
 
 
 def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
@@ -176,6 +214,11 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
     if interrupts and status == RunStatus.AWAITING_APPROVAL:
         approval = ApprovalRequest.model_validate(interrupts[0].value)
     review = values.get("review")
+    can_retry = (
+        status in _RETRYABLE
+        and values.get("failed_node") == "publish_draft"
+        and not values.get("wp_post_id")
+    )
     return RunSnapshot(
         run_id=run_id,
         status=status,
@@ -185,7 +228,8 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
         review_passed=review.passed if review else None,
         revision_count=values.get("revision_count", 0),
         warnings=values.get("warnings", []),
-        error=values.get("error"),
+        error=values.get("error") or None,
+        can_retry=can_retry,
         usage=values.get("usage", []),
     )
 

@@ -7,7 +7,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
-from wp_content_agent.runner import AgentRunner
+from wp_content_agent.runner import AgentRunner, ensure_can_retry
 from wp_content_agent.schemas import ApprovalDecision, Brief, RunSnapshot, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -65,14 +65,34 @@ class RunService:
         self._spawn(run_id, self._runner.resume(run_id, decision))
         return snapshot.model_copy(update={"approval": None})
 
+    async def retry(self, run_id: str) -> RunSnapshot:
+        if run_id in self._busy:
+            raise RunStateError(f"run {run_id} is still running")
+        if len(self._busy) >= self._max_runs:
+            raise RunLimitError(f"{self._max_runs} runs are already in progress")
+        self._busy.add(run_id)
+        try:
+            ensure_can_retry(snapshot := await self._runner.get(run_id))
+        except BaseException:
+            self._busy.discard(run_id)
+            raise
+        self._spawn(run_id, self._runner.retry(run_id))
+        return snapshot.model_copy(
+            update={"status": RunStatus.PUBLISHING, "error": None, "can_retry": False}
+        )
+
     async def get(self, run_id: str) -> RunSnapshot:
         try:
-            return await self._runner.get(run_id)
+            snapshot = await self._runner.get(run_id)
         except RunNotFoundError:
             # Started a moment ago: the first checkpoint is not written yet.
             if run_id in self._busy:
                 return RunSnapshot(run_id=run_id, status=RunStatus.PLANNING)
             raise
+        # A retry in progress is publishing with failed_node set; it is not retryable yet.
+        if run_id in self._busy:
+            return snapshot.model_copy(update={"can_retry": False})
+        return snapshot
 
     async def wait(self, run_id: str) -> None:
         """Wait for the background task of a run, if there is one. Used by tests."""

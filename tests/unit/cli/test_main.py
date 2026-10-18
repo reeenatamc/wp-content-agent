@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.fake_graph import fake_runner
+from tests.fake_graph import fake_runner, flaky_publish
 from wp_content_agent.cli.main import EXIT_FAILED, EXIT_OK, main
 from wp_content_agent.errors import LLMError
 from wp_content_agent.graph import AgentState
@@ -123,6 +123,38 @@ def test_failed_run_exits_nonzero(brief: Path) -> None:
 
     assert code == EXIT_FAILED
     assert "error:  write failed" in output
+
+
+def test_publish_failure_suggests_retry_and_retry_finishes_it(brief: Path) -> None:
+    runner = fake_runner(publish_draft=flaky_publish())
+
+    code, output = _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "a", "")
+    assert code == EXIT_FAILED
+    assert "retry:  wpagent retry r1" in output
+
+    code, output = _cli(["retry", "r1"], runner)
+    assert code == EXIT_OK
+    assert "status: draft_created" in output
+    assert "retry:" not in output
+
+
+def test_retry_of_a_run_that_cannot_be_retried_exits_with_error(
+    brief: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = fake_runner()
+    _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "l")
+
+    code, _ = _cli(["retry", "r1"], runner)
+
+    assert code == EXIT_FAILED
+    assert "cannot be retried" in capsys.readouterr().err
+
+
+def test_retry_unknown_run_exits_with_error(capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = _cli(["retry", "missing"], fake_runner())
+
+    assert code == EXIT_FAILED
+    assert "no run with id missing" in capsys.readouterr().err
 
 
 def test_invalid_brief_exits_with_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

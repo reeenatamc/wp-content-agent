@@ -7,12 +7,13 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from tests.fake_graph import fake_runner
+from tests.fake_graph import fake_runner, flaky_publish
 from wp_content_agent.api import create_app
 from wp_content_agent.api.service import RunService
-from wp_content_agent.errors import LLMError
+from wp_content_agent.errors import LLMError, ToolError
 from wp_content_agent.graph import AgentState
 from wp_content_agent.runner import AgentRunner
+from wp_content_agent.schemas import RunStatus
 from wp_content_agent.settings import Settings
 
 BRIEF = {"topic": "Caching in Django", "audience": "Backend developers"}
@@ -209,6 +210,102 @@ async def test_too_many_runs_is_429() -> None:
         await _service(app).wait(first.json()["run_id"])
 
     assert (first.status_code, second.status_code) == (202, 429)
+
+
+async def _failed_publish(client: httpx.AsyncClient, app: FastAPI) -> str:
+    run_id = await _started(client, app)
+    await client.post(f"/runs/{run_id}/approve")
+    await _service(app).wait(run_id)
+    return run_id
+
+
+async def test_retry_creates_the_draft_after_a_publish_failure() -> None:
+    app = _app(fake_runner(publish_draft=flaky_publish()))
+    async with _client(app) as client:
+        run_id = await _failed_publish(client, app)
+        failed = (await client.get(f"/runs/{run_id}")).json()
+        accepted = await client.post(f"/runs/{run_id}/retry")
+        await _service(app).wait(run_id)
+        body = (await client.get(f"/runs/{run_id}")).json()
+
+    assert failed["can_retry"] is True
+    assert accepted.status_code == 202
+    assert (accepted.json()["status"], accepted.json()["error"]) == ("publishing", None)
+    assert accepted.json()["can_retry"] is False
+    assert (body["status"], body["wp_post_id"], body["can_retry"]) == ("draft_created", 8, False)
+
+
+async def test_retry_unknown_run_is_404() -> None:
+    app = _app()
+    async with _client(app) as client:
+        response = await client.post("/runs/missing/retry")
+
+    assert response.status_code == 404
+
+
+async def test_retry_of_a_run_that_did_not_fail_in_publish_is_409() -> None:
+    app = _app()
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        response = await client.post(f"/runs/{run_id}/retry")
+
+    assert response.status_code == 409
+    assert "cannot be retried" in response.json()["detail"]
+
+
+async def test_retry_while_running_is_409() -> None:
+    gate = asyncio.Event()
+    calls = 0
+
+    async def publish_draft(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ToolError("create_draft_post failed: timeout")
+        await gate.wait()
+        return {"status": RunStatus.DRAFT_CREATED, "wp_post_id": 8}
+
+    app = _app(fake_runner(publish_draft=publish_draft))
+    async with _client(app) as client:
+        run_id = await _failed_publish(client, app)
+        first = await client.post(f"/runs/{run_id}/retry")
+        second = await client.post(f"/runs/{run_id}/retry")
+        during = (await client.get(f"/runs/{run_id}")).json()
+        gate.set()
+        await _service(app).wait(run_id)
+
+    assert (first.status_code, second.status_code) == (202, 409)
+    assert "still running" in second.json()["detail"]
+    assert (during["status"], during["can_retry"]) == ("publishing", False)
+
+
+async def test_retry_when_all_run_slots_are_busy_is_429() -> None:
+    gate = asyncio.Event()
+    blocking = False
+
+    async def plan(state: AgentState) -> dict[str, Any]:
+        if blocking:
+            await gate.wait()
+        return {}
+
+    app = _app(fake_runner(plan=plan, publish_draft=flaky_publish()), max_concurrent_runs=1)
+    async with _client(app) as client:
+        failed_id = await _failed_publish(client, app)
+        blocking = True
+        busy = await client.post("/runs", json=BRIEF)
+        response = await client.post(f"/runs/{failed_id}/retry")
+        gate.set()
+        await _service(app).wait(busy.json()["run_id"])
+
+    assert response.status_code == 429
+
+
+async def test_retry_requires_the_api_token() -> None:
+    app = _app(api_token="tok-123")
+    async with _client(app) as client:
+        response = await client.post("/runs/missing/retry")
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(

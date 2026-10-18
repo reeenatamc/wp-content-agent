@@ -87,6 +87,11 @@ def _parser() -> argparse.ArgumentParser:
         decide.add_argument("run_id")
         decide.add_argument("--note", default="", help="note stored with the decision")
         decide.set_defaults(command=_decide, approved=approved)
+
+    retry = commands.add_parser("retry", help="create the draft again for a run that failed there")
+    retry.add_argument("run_id")
+    retry.set_defaults(command=_retry)
+
     serve = commands.add_parser("serve", help="start the HTTP API")
     serve.add_argument("--host", help="defaults to API_HOST")
     serve.add_argument("--port", type=int, help="defaults to API_PORT")
@@ -181,6 +186,19 @@ async def _decide(
     decision = ApprovalDecision(approved=args.approved, note=args.note)
     async with open_runner(settings) as runner:
         snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
+    _summary(snapshot, out)
+    return snapshot
+
+
+async def _retry(
+    args: argparse.Namespace,
+    settings: Settings,
+    open_runner: OpenRunner,
+    ask: Ask | None,
+    out: TextIO,
+) -> RunSnapshot:
+    async with open_runner(settings) as runner:
+        snapshot = await runner.retry(args.run_id, on_progress=_progress(out))
     _summary(snapshot, out)
     return snapshot
 
@@ -288,6 +306,12 @@ def _summary(snapshot: RunSnapshot, out: TextIO) -> None:
         lines.append(f"edit:   {snapshot.edit_url}")
     if snapshot.error:
         lines.append(f"error:  {snapshot.error}")
+    if snapshot.can_retry:
+        # A request that timed out may still have created the post on the site.
+        lines.append(
+            f"retry:  wpagent retry {snapshot.run_id}"
+            " (check WordPress for the draft first; a timeout may have created it)"
+        )
     lines.extend(f"warning: {warning}" for warning in snapshot.warnings)
     lines.append(f"usage:  {snapshot.total_tokens:,} tokens, ${snapshot.total_cost_usd:.4f}")
     print("\n".join(lines), file=out)

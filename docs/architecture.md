@@ -84,7 +84,8 @@ before anything else starts. It then opens the SQLite checkpointer, starts the M
 as a subprocess and opens an HTTP client. All three close together.
 
 `start` refuses a run id that already exists. `resume` refuses a run that is not waiting
-for approval. Each run id has an `asyncio.Lock`, so two approvals of the same run cannot
+for approval. `retry` refuses a run unless it failed inside `publish_draft` without a
+post id. Each run id has an `asyncio.Lock`, so two approvals of the same run cannot
 create two drafts in one process.
 
 The checkpointer only loads types on an allowlist, which is derived from `AgentState`, so
@@ -100,6 +101,14 @@ runner writes `status: failed` and an error message into the checkpoint as if
 its message. Any other exception is reported as "internal error (TypeError); see the
 logs", because exception text can carry URLs or file paths. Cancellation and Ctrl-C also
 mark the run failed before they propagate. Usage recorded before the failure is kept.
+
+A run that failed inside `publish_draft` can be retried. The runner stores the node that
+raised in `failed_node`, and the snapshot reports `can_retry` when that node is
+`publish_draft` and no `wp_post_id` is set. `retry` clears the error, writes
+`status: publishing` as the approval node and drives the graph again, so only
+`publish_draft` runs, with the approved draft from the checkpoint and no model calls.
+If the failed request timed out, WordPress may have created the post anyway, so check the
+site before retrying.
 
 Model calls have a timeout and retries from the provider SDK (`LLM_TIMEOUT_S`,
 `LLM_MAX_RETRIES`). WordPress calls have their own timeouts and retries, described in
@@ -117,6 +126,9 @@ both take the last one.
 An `Idempotency-Key` header becomes the run id. Sending the same key again returns the
 existing run with `200` instead of starting a second one. The n8n workflow relies on this
 when it retries.
+
+`POST /runs/{id}/retry` follows the same pattern as approve: `404` for an unknown run,
+`409` while the run is busy or when it cannot be retried, `202` otherwise.
 
 On shutdown the service cancels its tasks and marks any run that had not finished as
 failed with "the server stopped during the run".
