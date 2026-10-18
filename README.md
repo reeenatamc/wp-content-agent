@@ -57,7 +57,8 @@ ANTHROPIC_API_KEY=sk-ant-... scripts/demo.sh
 `scripts/demo.sh` starts a local WordPress with a few seeded posts, writes its connection
 settings and your key into `.env`, and runs the example brief. The CLI prints each node as
 it finishes with its tokens and cost, shows the draft and the review, and asks before
-creating it. Approve it and open the edit URL it prints (WordPress login `admin` / `admin`). If port
+creating it. The run makes real model calls billed to your key, and the key stays
+in `.env` (mode 600, ignored by git) for the later commands. Approve it and open the edit URL it prints (WordPress login `admin` / `admin`). If port
 8080 is taken, run `WP_PORT=8088 scripts/demo.sh`.
 
 After the first run, the pieces can be used one by one:
@@ -83,8 +84,11 @@ source_urls:
   - https://docs.djangoproject.com/en/5.2/topics/cache/
 ```
 
-To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. Models, prices,
-timeouts, retries and limits are all settings; `.env.example` lists them.
+To use OpenAI instead, set `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, `WRITER_MODEL` and
+`REVIEWER_MODEL` (there are no OpenAI defaults). Models, prices, timeouts, retries and
+limits are all settings: `.env.example` lists the common ones and
+[settings.py](src/wp_content_agent/settings.py) has the rest, such as `LLM_TIMEOUT_S`,
+`LLM_MAX_RETRIES`, `MAX_TOOL_ITERATIONS` and `MODEL_PRICES`.
 
 ## HTTP API and n8n
 
@@ -187,8 +191,10 @@ strict mode and pytest on every push.
 
 ## Limitations
 
-- Rejecting a draft ends the run. There is no "revise with this feedback" path yet (#8).
-- A failed `publish_draft` cannot be retried; a new run is needed (#20).
+- Rejecting a draft ends the run. There is no "revise with this feedback" path yet
+  ([#8](https://github.com/reeenatamc/wp-content-agent/issues/8)).
+- A failed `publish_draft` cannot be retried; a new run is needed
+  ([#20](https://github.com/reeenatamc/wp-content-agent/issues/20)).
 - If the process dies after WordPress creates the post but before the checkpoint is
   written, resuming creates a second draft.
 - The Gutenberg converter is tested against the block grammar, not against the editor

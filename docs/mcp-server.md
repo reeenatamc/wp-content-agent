@@ -19,7 +19,7 @@ the Docker site is configured.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `list_posts` | `search` (up to 100 chars), `per_page` (1 to 20, default 10) | Published and draft posts: id, title, link, excerpt |
+| `list_posts` | `search` (up to 100 chars), `per_page` (1 to 20, default 10) | Published and draft posts: id, title, link, status |
 | `get_post` | `post_id` | One post with its content, status and edit URL |
 | `list_categories` | | Every category with its id |
 | `list_tags` | `search` | Tags with their ids |
@@ -34,8 +34,10 @@ new tag names into ids first.
 `meta_description` is stored in post meta under `WP_META_DESCRIPTION_KEY`
 (`meta_description` by default). WordPress ignores meta keys that are not registered for
 the REST API, so the server checks the response and logs a warning when the value was not
-saved. `docker/mu-plugins/wpagent-meta.php` registers the key on the local site; on a site
-with an SEO plugin, point the setting at that plugin's key instead.
+saved. `docker/mu-plugins/wpagent-meta.php` registers `meta_description` on the local
+site. On a site with an SEO plugin, point the setting at that plugin's key instead; the
+mu-plugin only covers the default key, so a different key must be registered by the plugin
+or by your own `register_post_meta` call.
 
 ## Errors, retries and timeouts
 
