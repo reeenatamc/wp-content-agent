@@ -17,7 +17,7 @@ class Draft(BaseModel):
     excerpt: str = Field(max_length=400, description="One or two sentences for listings")
     content_html: str = Field(
         description="Post body as semantic HTML: <p>, <h2>, <h3>, <ul>, <ol>, <li>, <a>, "
-        "<strong>, <em>, <blockquote>. No <h1>, no inline styles, no scripts."
+        "<strong>, <em>, <blockquote>, <code>. No <h1>, no inline styles, no scripts."
     )
     category_ids: list[int] = Field(
         default_factory=list, description="IDs of existing categories only"
