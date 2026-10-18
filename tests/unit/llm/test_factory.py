@@ -51,6 +51,8 @@ async def test_optional_model_without_key_fails_only_when_called(
         await client.chat([], node="write")
     with pytest.raises(LLMError, match="review: ANTHROPIC_API_KEY is not set"):
         await client.structured(Draft, [], node="review")
+    with pytest.raises(LLMError, match="ANTHROPIC_API_KEY is not set"):
+        _ = client.chat_model
 
 
 def test_optional_model_with_key_is_a_real_client() -> None:

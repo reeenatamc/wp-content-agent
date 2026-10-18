@@ -49,6 +49,11 @@ class UnavailableModelClient(ModelClient):
         self.cache_prompts = False
         self._reason = reason
 
+    # Read-only on purpose: there is no model, and touching it should say why.
+    @property
+    def chat_model(self) -> BaseChatModel:  # type: ignore[override]
+        raise LLMError(self._reason)
+
     async def structured[T: BaseModel](
         self, schema: type[T], messages: Sequence[BaseMessage], *, node: str
     ) -> tuple[T, NodeUsage]:

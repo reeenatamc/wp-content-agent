@@ -69,7 +69,8 @@ class AgentRunner:
         models=False is for commands that never call a model: they then work without
         an API key, and a model call fails when it is made.
         """
-        # Model clients first: a missing API key should fail before anything is opened.
+        # Model clients first: when models are needed, a missing API key should fail
+        # before anything is opened.
         writer = build_model_client(settings, "writer", required=models)
         reviewer = build_model_client(settings, "reviewer", required=models)
         settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)

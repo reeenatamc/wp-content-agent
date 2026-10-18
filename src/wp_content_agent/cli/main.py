@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 from pydantic import ValidationError
 
@@ -20,9 +20,16 @@ from wp_content_agent.runner import AgentRunner
 from wp_content_agent.schemas import ApprovalDecision, ApprovalRequest, RunSnapshot, RunStatus
 from wp_content_agent.settings import Settings
 
-# Called as open_runner(settings), or open_runner(settings, models=False) by commands
-# that never call a model.
-OpenRunner = Callable[..., AbstractAsyncContextManager[AgentRunner]]
+
+class OpenRunner(Protocol):
+    """AgentRunner.open, or a stand-in in tests. models=False is for commands that never
+    call a model, so they work without an API key."""
+
+    def __call__(
+        self, settings: Settings, *, models: bool = True
+    ) -> AbstractAsyncContextManager[AgentRunner]: ...
+
+
 # Reads one line of input, like input(). Commands get None when there is no terminal.
 Ask = Callable[[str], str]
 
