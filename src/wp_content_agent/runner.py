@@ -9,6 +9,7 @@ from typing import Any
 
 import aiosqlite
 import httpx
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command, StateSnapshot
@@ -133,7 +134,13 @@ class AgentRunner:
             update: dict[str, Any] = {"failed_node": failed_node, "usage": missing}
             # Streaming from an old checkpoint forks the history. The update is applied as
             # input, so no edge is evaluated and the pending node stays the one that failed.
-            return await self._drive(Command(update=update), run_id, on_progress, before.config)
+            return await self._drive(
+                Command(update=update),
+                run_id,
+                on_progress,
+                start_from=before.config,
+                retrying=failed_node,
+            )
 
     async def get(self, run_id: str) -> RunSnapshot:
         return _snapshot(run_id, await self._state(run_id))
@@ -162,24 +169,29 @@ class AgentRunner:
         payload: Any,
         run_id: str,
         on_progress: ProgressCallback | None,
-        start_from: Any = None,
+        *,
+        start_from: RunnableConfig | None = None,
+        retrying: str = "",
     ) -> RunSnapshot:
         config = _config(run_id)
         try:
             async for chunk in self._graph.astream(
-                payload, start_from or config, context=self._context, stream_mode="updates"
+                payload,
+                config if start_from is None else start_from,
+                context=self._context,
+                stream_mode="updates",
             ):
                 for node, update in chunk.items():
                     if node != "__interrupt__" and on_progress is not None:
                         _notify(on_progress, node, update or {})
         except BaseException as exc:
             # Cancellation and Ctrl-C also end the run, so it never stays half-done.
-            await self._mark_failed(config, exc)
+            await self._mark_failed(config, exc, retrying)
             if not isinstance(exc, Exception):
                 raise
         return await self.get(run_id)
 
-    async def _mark_failed(self, config: Any, exc: BaseException) -> None:
+    async def _mark_failed(self, config: Any, exc: BaseException, retrying: str = "") -> None:
         run_id = config["configurable"]["thread_id"]
         if isinstance(exc, AgentError):
             logger.error("run %s failed: %s", run_id, exc)
@@ -201,8 +213,9 @@ class AgentRunner:
             # Marking the run failed matters more than knowing where it stopped.
             logger.warning("could not read where run %s stopped", run_id, exc_info=True)
             pending = ()
-        # Always written, so a failure elsewhere never inherits an earlier publish failure.
-        values["failed_node"] = pending[0] if pending else ""
+        # Always written, so a failure elsewhere never inherits an earlier one. A retry that
+        # fails before its fork is written still points at the node it was retrying.
+        values["failed_node"] = pending[0] if pending else retrying
         try:
             # Written as the last node, so the run has no pending tasks and cannot resume.
             await self._graph.aupdate_state(config, values, as_node="publish_draft")
@@ -246,12 +259,15 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
         approval = ApprovalRequest.model_validate(interrupts[0].value)
     review = values.get("review")
     failed_node = values.get("failed_node") or None
-    # Failed, or a retry that died mid-way: the next node is still the one that failed.
+    # Failed, or a retry that died mid-way: the newest checkpoint is still the fork the
+    # retry wrote. Once the node runs, failed_node stays set, but the next checkpoint
+    # comes from the loop, so a later pass through the same node is not retryable.
+    died_mid_retry = (state.metadata or {}).get("source") == "fork" and state.next == (failed_node,)
     can_retry = (
         failed_node is not None
         and not values.get("wp_post_id")
         and approval is None
-        and (status == RunStatus.FAILED or state.next == (failed_node,))
+        and (status == RunStatus.FAILED or died_mid_retry)
     )
     return RunSnapshot(
         run_id=run_id,

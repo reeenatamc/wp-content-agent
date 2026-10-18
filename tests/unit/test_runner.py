@@ -8,7 +8,7 @@ from langgraph.types import Command
 from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentState, next_revision_count
-from wp_content_agent.runner import AgentRunner, _config, checkpoint_serializer
+from wp_content_agent.runner import AgentRunner, _config, _snapshot, checkpoint_serializer
 from wp_content_agent.schemas import (
     ApprovalDecision,
     Brief,
@@ -258,12 +258,19 @@ async def test_publish_failure_can_be_retried() -> None:
     assert snapshot.can_retry is False
 
 
-async def test_retry_that_died_mid_way_can_be_retried_again() -> None:
-    runner, _ = await _failed_at_publish()
-    before = await runner._checkpoint_before("r1", "publish_draft")
-    assert before is not None
-    # What retry writes before the node runs, as if the process died right after.
-    await runner._graph.aupdate_state(before.config, {"failed_node": "publish_draft"})
+async def test_retry_that_died_mid_way_can_be_retried_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, _ = await _failed_at_publish(failures=2)
+
+    async def died(*args: Any) -> None:
+        # The process is gone, so nothing marks the run failed.
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "_mark_failed", died)
+    with pytest.raises(KeyboardInterrupt):
+        await runner.retry("r1")
+    monkeypatch.undo()
 
     stuck = await runner.get("r1")
     snapshot = await runner.retry("r1")
@@ -290,6 +297,54 @@ async def test_retry_can_fail_again_and_be_retried_again() -> None:
 
     assert (second.status, second.can_retry) == (RunStatus.FAILED, True)
     assert third.status == RunStatus.DRAFT_CREATED
+
+
+async def test_a_later_pass_through_the_retried_node_is_not_retryable() -> None:
+    calls = 0
+
+    def review(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("review failed", usage("review"))
+        passed = calls > 2
+        return {
+            "review": Review(passed=passed, checks=[], fixes=[]),
+            "status": RunStatus.AWAITING_APPROVAL if passed else RunStatus.WRITING,
+            "usage": [usage("review")],
+        }
+
+    runner = fake_runner(review=review)
+    await runner.start(BRIEF, run_id="r1")
+    await runner.retry("r1")
+
+    # Every checkpoint after the retried review ran, including the second pass through it.
+    after_fork = []
+    async for state in runner._graph.aget_state_history(_config("r1")):
+        if state.metadata and state.metadata.get("source") == "fork":
+            break
+        after_fork.append(_snapshot("r1", state))
+
+    assert any(state.status == RunStatus.WRITING for state in after_fork)
+    assert not any(state.can_retry for state in after_fork)
+
+
+async def test_retry_that_fails_before_forking_stays_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, _ = await _failed_at_publish()
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("checkpoint file is gone")
+
+    monkeypatch.setattr(runner._graph, "astream", broken)
+    snapshot = await runner.retry("r1")
+
+    assert (snapshot.status, snapshot.failed_node, snapshot.can_retry) == (
+        RunStatus.FAILED,
+        "publish_draft",
+        True,
+    )
 
 
 def _failing_once(node: str, error: Exception, success: dict[str, Any] | None = None) -> Any:
@@ -443,7 +498,7 @@ async def test_retry_refuses_a_run_that_was_never_marked_failed() -> None:
     assert before is not None
     # A failed_node left over while the run waits for approval must not offer a retry.
     await runner._drive(
-        Command(update={"failed_node": "human_approval"}), "r1", None, before.config
+        Command(update={"failed_node": "human_approval"}), "r1", None, start_from=before.config
     )
 
     snapshot = await runner.get("r1")

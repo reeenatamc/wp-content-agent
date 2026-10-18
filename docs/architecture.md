@@ -116,8 +116,10 @@ mark the run failed before they propagate. Usage recorded before the failure is 
 
 A run that failed in any node can be retried. The runner stores the node that raised in
 `failed_node`, and the snapshot reports `can_retry` when it is set, no `wp_post_id`
-exists, no approval is pending, and the run is either `failed` or stopped with that node
-still pending (a retry that died mid-way). `retry` looks in the checkpoint history for
+exists, no approval is pending, and the run is either `failed` or its newest checkpoint is
+still the fork a retry wrote (a retry that died mid-way). `failed_node` stays set after a
+retry succeeds, but the checkpoints after it come from the graph loop, so a later pass
+through the same node is not retryable. `retry` looks in the checkpoint history for
 the newest checkpoint whose pending node is `failed_node`, which is the state that node
 started from, and streams from it with `Command(update=...)`. That forks the history: the
 nodes before it are not run or paid for again, and the failed attempt stays in the old
