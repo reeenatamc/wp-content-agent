@@ -471,7 +471,7 @@ async def test_retry_after_seconds_is_used_and_capped(
     assert sleeps == [2.0, 5.0]
 
 
-async def test_retry_after_http_date_in_the_past_retries_now(
+async def test_retry_after_in_the_past_waits_for_backoff(
     settings: WPSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sleeps: list[float] = []
@@ -483,13 +483,14 @@ async def test_retry_after_http_date_in_the_past_retries_now(
     handler = _rate_limited("Wed, 21 Oct 2015 07:28:00 GMT")
     http = httpx.AsyncClient(base_url="http://wp.test", transport=httpx.MockTransport(handler))
 
-    await WordPressClient(http, settings).list_tags()
+    await WordPressClient(http, settings.model_copy(update={"backoff_s": 0.25})).list_tags()
 
-    assert sleeps == [0.0]
+    assert sleeps == [0.25]
 
 
+@pytest.mark.parametrize("value", ["soon", "nan", "inf"])
 async def test_invalid_retry_after_falls_back_to_backoff(
-    settings: WPSettings, monkeypatch: pytest.MonkeyPatch
+    value: str, settings: WPSettings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sleeps: list[float] = []
 
@@ -498,9 +499,30 @@ async def test_invalid_retry_after_falls_back_to_backoff(
 
     monkeypatch.setattr("wp_mcp.client.asyncio.sleep", fake_sleep)
     http = httpx.AsyncClient(
-        base_url="http://wp.test", transport=httpx.MockTransport(_rate_limited("soon"))
+        base_url="http://wp.test", transport=httpx.MockTransport(_rate_limited(value))
     )
 
     await WordPressClient(http, settings.model_copy(update={"backoff_s": 0.25})).list_tags()
 
     assert sleeps == [0.25]
+
+
+async def test_terms_repeated_across_pages_are_deduped(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        items = [
+            {"id": page, "name": f"T{page}", "slug": f"t{page}"},
+            {"id": 1, "name": "T1", "slug": "t1"},
+        ]
+        return httpx.Response(200, json=items, headers={"X-WP-TotalPages": "2"})
+
+    tags = await make_client(handler).list_tags()
+
+    assert [tag.id for tag in tags] == [1, 2]
+
+
+def test_term_pages_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        WPSettings(username="u", app_password="p", max_term_pages=0)  # type: ignore[arg-type]

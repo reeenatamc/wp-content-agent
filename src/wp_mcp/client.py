@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Self
@@ -60,13 +61,16 @@ class WordPressClient:
 
     async def _list_terms(self, path: str, params: dict[str, Any]) -> list[Term]:
         """Read every page of a taxonomy, following X-WP-TotalPages."""
-        terms: list[Term] = []
+        terms: dict[int, Term] = {}
         pages = 1
         page = 1
         while page <= pages:
             query = {**params, "per_page": 100, "page": page, "_fields": "id,name,slug"}
             response = await self._send("GET", path, params=query)
-            terms.extend(Term.model_validate(item) for item in _json_body(response, path))
+            # Offset paging can repeat a term if the taxonomy changes between pages.
+            for item in _json_body(response, path):
+                term = Term.model_validate(item)
+                terms[term.id] = term
             pages = _total_pages(response)
             if page >= self._settings.max_term_pages and pages > page:
                 logger.warning(
@@ -77,7 +81,7 @@ class WordPressClient:
                 )
                 break
             page += 1
-        return terms
+        return list(terms.values())
 
     async def create_tag(self, name: str) -> Term:
         try:
@@ -147,8 +151,9 @@ class WordPressClient:
         retry_after: float | None = None
         for attempt in range(attempts):
             if attempt:
+                # Never shorter than the backoff, so a Retry-After of 0 cannot hammer the site.
                 backoff = self._settings.backoff_s * 2 ** (attempt - 1)
-                await asyncio.sleep(backoff if retry_after is None else retry_after)
+                await asyncio.sleep(max(backoff, retry_after or 0.0))
             retry_after = None
             try:
                 response = await self._http.request(method, path, **kwargs)
@@ -216,6 +221,8 @@ def _retry_after(response: httpx.Response, cap: float) -> float | None:
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
         seconds = (when - datetime.now(UTC)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
     return min(max(seconds, 0.0), cap)
 
 
