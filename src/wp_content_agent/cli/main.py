@@ -158,11 +158,14 @@ async def _run(
 ) -> RunSnapshot:
     brief = load_brief(args.brief)
     print(f"brief: {brief.topic}", file=out)
-    progress, tokens = _reporters(out)
+    progress, tokens, end_line = _reporters(out)
     async with open_runner(settings) as runner:
-        snapshot = await runner.start(
-            brief, run_id=args.run_id, on_progress=progress, on_token=tokens
-        )
+        try:
+            snapshot = await runner.start(
+                brief, run_id=args.run_id, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
         print(f"run id: {snapshot.run_id}", file=out)
         # A revision sends the run back to the writer and it stops at approval again.
         while snapshot.approval is not None:
@@ -175,9 +178,12 @@ async def _run(
                     file=out,
                 )
                 return snapshot
-            snapshot = await runner.resume(
-                snapshot.run_id, decision, on_progress=progress, on_token=tokens
-            )
+            try:
+                snapshot = await runner.resume(
+                    snapshot.run_id, decision, on_progress=progress, on_token=tokens
+                )
+            finally:
+                end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -206,8 +212,13 @@ async def _decide(
 ) -> RunSnapshot:
     decision = ApprovalDecision(approved=args.approved, note=args.note)
     async with open_runner(settings, models=False) as runner:
-        progress, tokens = _reporters(out)
-        snapshot = await runner.resume(args.run_id, decision, on_progress=progress, on_token=tokens)
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.resume(
+                args.run_id, decision, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -224,8 +235,13 @@ async def _revise(
     except ValidationError as exc:
         raise AgentError("the note must say what to change") from exc
     async with open_runner(settings) as runner:
-        progress, tokens = _reporters(out)
-        snapshot = await runner.resume(args.run_id, decision, on_progress=progress, on_token=tokens)
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.resume(
+                args.run_id, decision, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -238,8 +254,11 @@ async def _retry(
     out: TextIO,
 ) -> RunSnapshot:
     async with open_runner(settings) as runner:
-        progress, tokens = _reporters(out)
-        snapshot = await runner.retry(args.run_id, on_progress=progress, on_token=tokens)
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.retry(args.run_id, on_progress=progress, on_token=tokens)
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -313,19 +332,22 @@ def _preview(content_html: str) -> str:
     return text if len(text) <= PREVIEW_CHARS else f"{text[:PREVIEW_CHARS].rstrip()}..."
 
 
-def _reporters(out: TextIO) -> tuple[ProgressCallback, TokenCallback]:
+def _reporters(out: TextIO) -> tuple[ProgressCallback, TokenCallback, Callable[[], None]]:
     """Progress lines and the writer's streamed text, which share the terminal.
 
     The writer returns structured output, so the text is the draft as JSON.
     """
     mid_line = False
 
-    def report(node: str, update: Mapping[str, Any]) -> None:
+    def end_line() -> None:
+        # Streamed text has no newline; whatever is printed next starts on its own line.
         nonlocal mid_line
         if mid_line:
-            # Streamed text has no newline; progress lines start on their own line.
             print(file=out)
             mid_line = False
+
+    def report(node: str, update: Mapping[str, Any]) -> None:
+        end_line()
         cost = ""
         if entries := update.get("usage", []):
             tokens = sum(entry.input_tokens + entry.output_tokens for entry in entries)
@@ -341,7 +363,7 @@ def _reporters(out: TextIO) -> tuple[ProgressCallback, TokenCallback]:
         out.flush()
         mid_line = True
 
-    return report, stream
+    return report, stream, end_line
 
 
 def _detail(node: str, update: Mapping[str, Any]) -> str:

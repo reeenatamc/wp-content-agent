@@ -38,7 +38,8 @@ SUBSCRIBER_QUEUE_SIZE = 1000
 
 @dataclass(frozen=True)
 class RunEvent:
-    """One thing that happened in a run. `end` is always the last event of a stream."""
+    """One thing that happened in a run. `end` is the last event of a stream, unless the
+    reader fell too far behind and was dropped; the stream then just stops."""
 
     type: Literal["snapshot", "node", "token", "end"]
     data: dict[str, Any] = field(default_factory=dict)
@@ -59,6 +60,9 @@ class RunService:
         self._busy: set[str] = set()
         self._subscribers: dict[str, set[asyncio.Queue[Any]]] = {}
         self._closers: set[asyncio.Task[None]] = set()
+        # Set by aclose: subscribers then get `end` only after their run is marked failed.
+        self._closing = False
+        self._ending: dict[str, set[asyncio.Queue[Any]]] = {}
 
     async def start(self, brief: Brief, run_id: str | None = None) -> tuple[RunSnapshot, bool]:
         """Start a run. With a known run_id, return that run instead (False = not new)."""
@@ -74,9 +78,9 @@ class RunService:
             self._spawn(run_id, self._runner.start(brief, run_id=run_id, **self._hooks(run_id)))
             return RunSnapshot(run_id=run_id, status=RunStatus.PLANNING), True
         except BaseException:
-            self._busy.discard(run_id)
+            self._release(run_id)
             raise
-        self._busy.discard(run_id)
+        self._release(run_id)
         return existing, False
 
     async def resume(self, run_id: str, decision: ApprovalDecision) -> RunSnapshot:
@@ -88,7 +92,7 @@ class RunService:
             snapshot = await self._runner.get(run_id)
             ensure_can_resume(snapshot, decision)
         except BaseException:
-            self._busy.discard(run_id)
+            self._release(run_id)
             raise
         self._spawn(run_id, self._runner.resume(run_id, decision, **self._hooks(run_id)))
         return snapshot.model_copy(update={"approval": None, "status": _status_after(decision)})
@@ -102,7 +106,7 @@ class RunService:
         try:
             ensure_can_retry(snapshot := await self._runner.get(run_id))
         except BaseException:
-            self._busy.discard(run_id)
+            self._release(run_id)
             raise
         self._spawn(run_id, self._runner.retry(run_id, **self._hooks(run_id)))
         return _retrying(snapshot)
@@ -155,6 +159,7 @@ class RunService:
             await asyncio.wait({task})
 
     async def aclose(self) -> None:
+        self._closing = True
         tasks = dict(self._tasks)
         for task in tasks.values():
             task.cancel()
@@ -167,6 +172,8 @@ class RunService:
                 status = RunStatus.PLANNING
             if status in _UNFINISHED:
                 await self._runner.mark_failed(run_id, "the server stopped during the run")
+        for run_id, subscribers in self._ending.items():
+            await self._publish_end(run_id, subscribers)
         await asyncio.gather(*self._closers)
 
     def _hooks(self, run_id: str) -> dict[str, Any]:
@@ -211,6 +218,21 @@ class RunService:
             except asyncio.QueueFull:
                 self._drop(run_id, queue)
 
+    def _release(self, run_id: str) -> None:
+        """Free a claimed run id, and end the streams of anyone who saw it as busy."""
+        self._busy.discard(run_id)
+        if run_id in self._tasks:
+            return
+        # Taken now, so a run started again under the same id gets its own subscribers.
+        if not (subscribers := self._subscribers.pop(run_id, set())):
+            return
+        if self._closing:
+            self._ending.setdefault(run_id, set()).update(subscribers)
+            return
+        closer = asyncio.create_task(self._publish_end(run_id, subscribers))
+        self._closers.add(closer)
+        closer.add_done_callback(self._closers.discard)
+
     def _spawn(self, run_id: str, work: Coroutine[Any, Any, RunSnapshot]) -> None:
         task = asyncio.create_task(work, name=f"run-{run_id}")
         self._tasks[run_id] = task
@@ -219,12 +241,7 @@ class RunService:
     def _finished(self, run_id: str, task: asyncio.Task[RunSnapshot]) -> None:
         if self._tasks.get(run_id) is task:
             del self._tasks[run_id]
-            self._busy.discard(run_id)
-            # Taken now, so a run started again under the same id gets its own subscribers.
-            if subscribers := self._subscribers.pop(run_id, set()):
-                closer = asyncio.create_task(self._publish_end(run_id, subscribers))
-                self._closers.add(closer)
-                closer.add_done_callback(self._closers.discard)
+            self._release(run_id)
         if task.cancelled():
             return
         if (exc := task.exception()) is not None:

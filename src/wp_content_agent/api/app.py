@@ -111,11 +111,11 @@ def create_app(
 
     @router.get("/{run_id}/events")
     async def run_events(run_id: str, runs: Service) -> StreamingResponse:
-        events = runs.events(run_id)
-        # The first event is read here so an unknown run is a 404, not an empty stream.
-        first = await anext(events)
+        # Checked here so an unknown run is a 404, not an empty stream. Subscribing waits
+        # for the response to start, so a client that leaves first leaves nothing behind.
+        await runs.get(run_id)
         return StreamingResponse(
-            _sse(first, events, settings.sse_keepalive_s),
+            _sse(lambda: runs.events(run_id), settings.sse_keepalive_s),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -167,12 +167,12 @@ def create_app(
 
 
 async def _sse(
-    first: RunEvent, rest: AsyncGenerator[RunEvent], keepalive_s: float
+    subscribe: Callable[[], AsyncGenerator[RunEvent]], keepalive_s: float
 ) -> AsyncIterator[str]:
     """Server-sent events, with a comment line whenever nothing was sent for keepalive_s."""
+    rest = subscribe()
     pending: asyncio.Task[RunEvent] | None = None
     try:
-        yield _frame(first)
         while True:
             # A timed-out wait must not cancel the read, or the event it was about to
             # deliver would be lost; the same task is awaited again.

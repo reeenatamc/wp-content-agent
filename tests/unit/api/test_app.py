@@ -488,8 +488,7 @@ async def test_sse_sends_a_keepalive_while_the_run_is_quiet() -> None:
         await release.wait()
         yield RunEvent("end")
 
-    events = slow()
-    stream = _sse(await anext(events), events, 0.01)
+    stream = _sse(slow, 0.01)
 
     frames = [await anext(stream), await anext(stream)]
     release.set()
@@ -505,8 +504,7 @@ async def test_closing_the_stream_unregisters_the_subscriber() -> None:
     async with _client(app) as client:
         service = _service(app)
         run_id = (await client.post("/runs", json=BRIEF)).json()["run_id"]
-        events = service.events(run_id)
-        stream = _sse(await anext(events), events, 1.0)
+        stream = _sse(lambda: service.events(run_id), 1.0)
         await anext(stream)
         await anext(stream)
 
