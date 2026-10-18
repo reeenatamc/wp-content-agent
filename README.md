@@ -150,7 +150,8 @@ behavior.
   is tested on its own.
 - Grounding is enforced in code, not only in prompts. Notes keep only facts whose numbers
   appear on the fetched page, related posts must come from WordPress tool results, and the
-  review fails any number in the draft that is not in the sources.
+  review fails any number in the draft that is not in the sources. Claims without
+  numbers are left to the model reviewer.
 - Two models: Sonnet writes and Haiku reviews. The review is mostly a checklist, so a
   smaller model does it for a fraction of the cost.
 - Approval is a graph interrupt with a SQLite checkpointer rather than a flag in a
@@ -161,9 +162,16 @@ behavior.
 - Prompt caching marks every system prompt, plus the brief and notes in `write` and
   `review`, which run again on every revision. The eval table reports how much of the
   input came from cache.
+- Human revisions are capped by `MAX_HUMAN_REVISIONS` (2 by default) to keep cost
+  predictable; each one runs the review loop again. Rejecting a draft ends the run.
+- Retries resume from the failed step, so earlier steps are not run or paid for again.
+  After a timed-out publish, the retry reuses a draft with the same slug, title and
+  content instead of creating a second one.
+- One API process per checkpoint file. The per-run lock lives in memory, which keeps
+  deployment simple; several workers on the same file are not supported.
 
 [docs/architecture.md](docs/architecture.md) goes deeper into the state, the error
-handling and the API.
+handling, the API and the edge cases.
 
 ## Evals
 
@@ -191,19 +199,6 @@ WPAGENT_INTEGRATION=1 uv run pytest tests/integration   # needs scripts/wp-up.sh
 Unit tests fake the models and WordPress. The integration tests run the MCP server against
 the Docker WordPress and drive the whole graph with scripted models. CI runs ruff, mypy in
 strict mode and pytest on every push.
-
-## Design choices
-
-- Drafts only. The agent never publishes; a person approves every post in WordPress.
-- Human revisions are capped by `MAX_HUMAN_REVISIONS` (2 by default) to keep cost
-  predictable; each one runs the review loop again. Rejecting a draft ends the run.
-- Retries resume from the failed step. After a timed-out publish, the retry reuses a
-  draft with the same slug, title and content instead of creating a second one.
-- One API process per checkpoint file. The per-run lock lives in memory, which keeps
-  deployment simple; several workers on the same file are not supported.
-- Numbers in the draft are checked against the sources in code; claims without numbers
-  are left to the model reviewer.
-- Edge cases are documented in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
