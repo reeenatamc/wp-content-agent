@@ -20,7 +20,9 @@ from wp_content_agent.runner import AgentRunner
 from wp_content_agent.schemas import ApprovalDecision, ApprovalRequest, RunSnapshot, RunStatus
 from wp_content_agent.settings import Settings
 
-OpenRunner = Callable[[Settings], AbstractAsyncContextManager[AgentRunner]]
+# Called as open_runner(settings), or open_runner(settings, models=False) by commands
+# that never call a model.
+OpenRunner = Callable[..., AbstractAsyncContextManager[AgentRunner]]
 # Reads one line of input, like input(). Commands get None when there is no terminal.
 Ask = Callable[[str], str]
 
@@ -174,7 +176,7 @@ async def _status(
     ask: Ask | None,
     out: TextIO,
 ) -> RunSnapshot:
-    async with open_runner(settings) as runner:
+    async with open_runner(settings, models=False) as runner:
         snapshot = await runner.get(args.run_id)
     if snapshot.approval is not None:
         _show_approval(snapshot.approval, out)
@@ -190,7 +192,7 @@ async def _decide(
     out: TextIO,
 ) -> RunSnapshot:
     decision = ApprovalDecision(approved=args.approved, note=args.note)
-    async with open_runner(settings) as runner:
+    async with open_runner(settings, models=False) as runner:
         snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
     _summary(snapshot, out)
     return snapshot

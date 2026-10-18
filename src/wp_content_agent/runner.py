@@ -63,11 +63,15 @@ class AgentRunner:
 
     @classmethod
     @asynccontextmanager
-    async def open(cls, settings: Settings) -> AsyncIterator["AgentRunner"]:
-        """Open the checkpoint database, the MCP session and an HTTP client for fetches."""
+    async def open(cls, settings: Settings, *, models: bool = True) -> AsyncIterator["AgentRunner"]:
+        """Open the checkpoint database, the MCP session and an HTTP client for fetches.
+
+        models=False is for commands that never call a model: they then work without
+        an API key, and a model call fails when it is made.
+        """
         # Model clients first: a missing API key should fail before anything is opened.
-        writer = build_model_client(settings, "writer")
-        reviewer = build_model_client(settings, "reviewer")
+        writer = build_model_client(settings, "writer", required=models)
+        reviewer = build_model_client(settings, "reviewer", required=models)
         settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
         async with AsyncExitStack() as stack:
             conn = await stack.enter_async_context(aiosqlite.connect(str(settings.checkpoint_db)))

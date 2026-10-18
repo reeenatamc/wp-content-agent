@@ -34,9 +34,11 @@ def brief(tmp_path: Path) -> Path:
     return path
 
 
-def _opener(runner: AgentRunner) -> Any:
+def _opener(runner: AgentRunner, opened: list[bool] | None = None) -> Any:
     @asynccontextmanager
-    async def open_runner(settings: Settings) -> AsyncIterator[AgentRunner]:
+    async def open_runner(settings: Settings, *, models: bool = True) -> AsyncIterator[AgentRunner]:
+        if opened is not None:
+            opened.append(models)
         yield runner
 
     return open_runner
@@ -281,3 +283,32 @@ def test_revise_command_requires_a_note(capsys: pytest.CaptureFixture[str]) -> N
         _cli(["revise", "r1"], fake_runner())
 
     assert "--note" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "models"),
+    [(["status", "r1"], False), (["approve", "r1"], False), (["reject", "r1"], False)],
+)
+def test_commands_without_model_calls_open_without_models(
+    brief: Path, argv: list[str], models: bool
+) -> None:
+    runner = fake_runner()
+    _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "l")
+    opened: list[bool] = []
+
+    main(argv, open_runner=_opener(runner, opened), out=io.StringIO())
+
+    assert opened == [models]
+
+
+def test_run_opens_with_models(brief: Path) -> None:
+    opened: list[bool] = []
+
+    main(
+        ["run", "--brief", str(brief)],
+        open_runner=_opener(fake_runner(), opened),
+        ask=_answers("l"),
+        out=io.StringIO(),
+    )
+
+    assert opened == [True]

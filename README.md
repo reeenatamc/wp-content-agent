@@ -210,8 +210,6 @@ strict mode and pytest on every push.
   cacheable length, which is the case for short briefs.
 - The per-run lock that stops two approvals at once works inside one process. Running
   several API workers on the same checkpoint file is not supported.
-- `status`, `approve`, `reject`, `revise` and `retry` load the full configuration,
-  including the model key, even though they do not call a model.
 - Number checks catch invented statistics, not invented claims without numbers; that part
   rests on the model reviewer.
 
