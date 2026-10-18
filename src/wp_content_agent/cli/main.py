@@ -259,10 +259,9 @@ def _ask_decision(request: ApprovalRequest, ask: Ask, out: TextIO) -> ApprovalDe
             case "c" if request.human_revisions_left == 0:
                 print("no human revisions left; approve or reject", file=out)
             case "c":
-                note = ask("what should change: ").strip()
-                while not note:
-                    note = ask("what should change: ").strip()
-                return ApprovalDecision(approved=False, note=note, revise=True)
+                # A blank note goes back to the menu.
+                if note := ask("what should change (blank to go back): ").strip():
+                    return ApprovalDecision(approved=False, note=note, revise=True)
             case "v":
                 print(request.content_html, file=out)
             case "l":

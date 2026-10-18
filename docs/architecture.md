@@ -61,8 +61,9 @@ category ids and tag names. Category ids that are not among the site's categorie
 dropped. On a revision it gets the previous draft and the review's fixes. When
 `human_feedback` is set, it gets the previous draft and the editor's note instead, and the
 note takes precedence over review fixes for that call. `write` clears `human_feedback`, so a
-note applies once. `revision_count` keeps counting across human revisions and is not reset:
-the review loop budget (`MAX_REVISIONS`) is shared with them.
+note applies once. A draft written from a note starts `revision_count` at 0 again, so the
+review loop has its full `MAX_REVISIONS` budget to fix anything the note broke. A run
+makes at most `MAX_HUMAN_REVISIONS × (MAX_REVISIONS + 1)` extra writes.
 
 `review` runs code checks first: meta description length (140 to 160 characters), allowed
 HTML tags and attributes, and numbers in the draft that do not appear in the notes. The

@@ -235,7 +235,7 @@ def test_serve_passes_host_port_and_runner(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_change_asks_again_after_the_revised_draft(brief: Path) -> None:
     code, output = _cli(
-        ["run", "--brief", str(brief)], fake_runner(), "c", "", "  ", "shorter intro", "a", ""
+        ["run", "--brief", str(brief)], fake_runner(), "c", "  ", "c", "shorter intro", "a", ""
     )
 
     assert code == EXIT_OK

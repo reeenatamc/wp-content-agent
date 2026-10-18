@@ -197,8 +197,8 @@ strict mode and pytest on every push.
 ## Limitations
 
 - Rejecting a draft ends the run. To change a draft instead, use revise; each run allows
-  `MAX_HUMAN_REVISIONS` of them (2 by default). A human revision counts as a write, so it
-  does not give the automatic review loop (`MAX_REVISIONS`) a fresh budget.
+  `MAX_HUMAN_REVISIONS` of them (2 by default), and each one can cost up to
+  `MAX_REVISIONS + 1` more writes, because the review loop runs again after the note.
 - Only a run that failed inside `publish_draft` can be retried; other failures need a
   new run. If the failed request timed out, WordPress may have created the post anyway,
   so check the site before retrying.

@@ -39,8 +39,12 @@ class AgentState(TypedDict, total=False):
 
 
 def next_revision_count(state: AgentState) -> int:
-    """Revisions so far, counting the draft about to be written. The first draft is 0."""
-    if "draft" not in state:
+    """Automatic revisions so far, counting the draft about to be written.
+
+    The first draft is 0, and so is a draft that applies an editor's note: the review
+    loop then gets its full MAX_REVISIONS budget to fix what the note broke.
+    """
+    if "draft" not in state or state.get("human_feedback"):
         return 0
     return state.get("revision_count", 0) + 1
 

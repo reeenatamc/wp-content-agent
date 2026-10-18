@@ -184,8 +184,8 @@ class AgentRunner:
             # Marking the run failed matters more than knowing where it stopped.
             logger.warning("could not read where run %s stopped", run_id, exc_info=True)
             pending = ()
-        if pending:
-            values["failed_node"] = pending[0]
+        # Always written, so a failure elsewhere never inherits an earlier publish failure.
+        values["failed_node"] = pending[0] if pending else ""
         try:
             # Written as the last node, so the run has no pending tasks and cannot resume.
             await self._graph.aupdate_state(config, values, as_node="publish_draft")

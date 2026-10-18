@@ -77,8 +77,6 @@ async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, 
     draft, usage = await writer.structured(Draft, messages, node="write")
     return {
         "draft": _known_categories(draft, notes),
-        # A human revision also counts as a write, but it does not reset the automatic
-        # review budget (MAX_REVISIONS): that keeps counting across the whole run.
         "revision_count": next_revision_count(state),
         "human_feedback": "",
         "status": RunStatus.REVIEWING,

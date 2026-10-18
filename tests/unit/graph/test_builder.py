@@ -177,3 +177,11 @@ def test_next_revision_count_starts_at_zero_and_counts_rewrites() -> None:
     second = next_revision_count({"draft": DRAFT, "revision_count": 0})
 
     assert (first, second) == (0, 1)
+
+
+def test_next_revision_count_restarts_for_an_editors_note() -> None:
+    state = {"draft": DRAFT, "revision_count": 2, "human_feedback": "shorter intro"}
+
+    count = next_revision_count(state)  # type: ignore[arg-type]
+
+    assert count == 0

@@ -119,7 +119,7 @@ async def test_human_feedback_is_applied_and_cleared() -> None:
     assert str(last.content).endswith("shorter intro")
     assert "meta_description_length" not in str(last.content)
     assert update["human_feedback"] == ""
-    assert update["revision_count"] == 1
+    assert update["revision_count"] == 0  # a note restarts the review budget
 
 
 async def test_write_without_human_feedback_clears_the_field_and_uses_the_review() -> None:
