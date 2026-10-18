@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from wp_content_agent.schemas import Brief, Draft, Review
+from wp_content_agent.schemas import Brief, Draft, Outline, OutlineSection, Review
 from wp_content_agent.schemas.draft import slugify
 
 
@@ -70,3 +70,13 @@ def test_review_lists_failed_checks() -> None:
     )
 
     assert [check.name for check in review.failed_checks] == ["readability"]
+
+
+def test_outline_must_start_with_h2() -> None:
+    sections = [
+        OutlineSection(heading="Sub", level=3, key_points=[]),
+        OutlineSection(heading="Main", level=2, key_points=[]),
+    ]
+
+    with pytest.raises(ValidationError, match="first section must be an H2"):
+        Outline(working_title="T", angle="A", sections=sections)

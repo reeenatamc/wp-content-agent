@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class OutlineSection(BaseModel):
@@ -13,3 +13,10 @@ class Outline(BaseModel):
     working_title: str
     angle: str = Field(description="One sentence on the take that makes this post useful")
     sections: list[OutlineSection] = Field(min_length=2)
+
+    @field_validator("sections")
+    @classmethod
+    def _starts_with_h2(cls, sections: list[OutlineSection]) -> list[OutlineSection]:
+        if sections[0].level != 2:
+            raise ValueError("the first section must be an H2")
+        return sections
