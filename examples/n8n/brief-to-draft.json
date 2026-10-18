@@ -1,0 +1,327 @@
+{
+  "name": "Brief to WordPress draft",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "New post brief",
+        "formDescription": "Starts a run of wp-content-agent. The result is a WordPress draft that still needs approval.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "topic",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "audience",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "tone",
+              "placeholder": "practical"
+            },
+            {
+              "fieldLabel": "target_words",
+              "fieldType": "number",
+              "placeholder": "900"
+            },
+            {
+              "fieldLabel": "keywords",
+              "placeholder": "comma separated"
+            },
+            {
+              "fieldLabel": "source_urls",
+              "fieldType": "textarea",
+              "placeholder": "one URL per line"
+            }
+          ]
+        },
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d01",
+      "name": "Brief form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "0e7f3c1a-2b4d-4e6f-8a9b-0c1d2e3f4a51"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Agent location. host.docker.internal reaches the host from the n8n container.\nconst agentUrl = 'http://host.docker.internal:8000';\n\nconst form = $input.first().json;\nconst list = (text, sep) => (text || '').split(sep).map((s) => s.trim()).filter(Boolean);\n\nconst brief = { topic: form.topic, audience: form.audience };\nif (form.tone) brief.tone = form.tone;\nif (form.target_words) brief.target_words = Number(form.target_words);\nconst keywords = list(form.keywords, ',');\nif (keywords.length) brief.keywords = keywords;\nconst urls = list(form.source_urls, /\\r?\\n/);\nif (urls.length) brief.source_urls = urls;\n\n// Sent as Idempotency-Key: the same within this execution, so an n8n retry of\n// \"Start run\" returns the existing run, and unique across executions and n8n installs.\nconst requestKey = `n8n-${$execution.id}-${Date.now()}`;\n\nreturn [{ json: { agentUrl, brief, requestKey } }];"
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d02",
+      "name": "Build brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.agentUrl }}/webhooks/n8n",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.requestKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.brief) }}",
+        "options": {}
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d03",
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "wpagent webhook secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d04",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Build brief').first().json.agentUrl }}/runs/{{ $('Start run').first().json.run_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d05",
+      "name": "Get run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "wpagent API token"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b3a1c2d4-0000-4000-8000-000000000001",
+              "leftValue": "={{ !['awaiting_approval', 'draft_created', 'rejected', 'failed'].includes($json.status) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "b3a1c2d4-0000-4000-8000-000000000002",
+              "leftValue": "={{ $runIndex < 80 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d06",
+      "name": "Still running?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        0
+      ],
+      "notes": "Polls every 15 s for up to 20 minutes, then reports the last status."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "run_id",
+              "value": "={{ $json.run_id }}",
+              "type": "string"
+            },
+            {
+              "id": "c2",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "c3",
+              "name": "title",
+              "value": "={{ $json.approval ? $json.approval.title : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "c4",
+              "name": "review_passed",
+              "value": "={{ $json.review_passed ?? false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "c5",
+              "name": "approve_url",
+              "value": "={{ $('Build brief').first().json.agentUrl }}/runs/{{ $json.run_id }}/approve",
+              "type": "string"
+            },
+            {
+              "id": "c6",
+              "name": "cost_usd",
+              "value": "={{ $json.total_cost_usd ?? 0 }}",
+              "type": "number"
+            },
+            {
+              "id": "c7",
+              "name": "error",
+              "value": "={{ $json.error || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "c8",
+              "name": "timed_out",
+              "value": "={{ !['awaiting_approval', 'draft_created', 'rejected', 'failed'].includes($json.status) }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5b0b6a3e-6a52-4f7e-9d0c-1f2a3b4c5d07",
+      "name": "Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1320,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Brief form": {
+      "main": [
+        [
+          {
+            "node": "Build brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build brief": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Get run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get run": {
+      "main": [
+        [
+          {
+            "node": "Still running?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still running?": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
