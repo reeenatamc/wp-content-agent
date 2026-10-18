@@ -10,6 +10,8 @@ from wp_content_agent.settings import ModelPrice
 
 logger = logging.getLogger(__name__)
 
+_warned_models: set[str] = set()
+
 
 def estimate_cost(
     model: str,
@@ -22,8 +24,12 @@ def estimate_cost(
 ) -> float:
     price = _find_price(model, prices)
     if price is None:
-        logger.warning("no price configured for model %s; cost reported as 0", model)
+        if model not in _warned_models:
+            _warned_models.add(model)
+            logger.warning("no price configured for model %s; cost reported as 0", model)
         return 0.0
+    # langchain reports input_tokens including cache reads and writes, so the uncached
+    # part is what remains after subtracting them.
     uncached = max(input_tokens - cache_read_tokens - cache_write_tokens, 0)
     total = (
         uncached * price.input
@@ -85,6 +91,10 @@ def usage_from_messages(
 
 def merge_usage(first: NodeUsage, second: NodeUsage) -> NodeUsage:
     """Sum two entries for the same node and model, such as a tool loop and its final call."""
+    if (first.node, first.model) != (second.node, second.model):
+        raise ValueError(
+            f"cannot merge usage for {first.node}/{first.model} and {second.node}/{second.model}"
+        )
     return first.model_copy(
         update={
             "input_tokens": first.input_tokens + second.input_tokens,

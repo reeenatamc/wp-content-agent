@@ -1,3 +1,4 @@
+import anthropic
 import httpx
 import pytest
 from langchain_core.messages import ToolMessage
@@ -225,3 +226,19 @@ async def test_llm_error_on_notes_carries_loop_usage() -> None:
 
     assert info.value.usage is not None
     assert info.value.usage.input_tokens == 30
+
+
+async def test_llm_error_mid_loop_carries_usage_of_earlier_replies() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    writer = fake_client(
+        ai(tool_calls=[_call("list_posts", {"search": "x"}, "1")]),
+        anthropic.APIConnectionError(request=request),
+    )
+
+    with pytest.raises(LLMError, match="gather_context: model call failed") as info:
+        await gather_context(
+            {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+        )
+
+    assert info.value.usage is not None
+    assert (info.value.usage.input_tokens, info.value.usage.output_tokens) == (10, 5)

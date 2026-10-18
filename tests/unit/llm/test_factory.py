@@ -39,6 +39,39 @@ def test_missing_api_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) ->
         build_model_client(settings, "writer")
 
 
+def test_missing_openai_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings(_env_file=None, llm_provider="openai", writer_model="w", reviewer_model="r")
+
+    with pytest.raises(LLMError, match="OPENAI_API_KEY"):
+        build_model_client(settings, "writer")
+
+
+def test_llm_limits_reach_both_providers() -> None:
+    limits = {"llm_timeout_s": 33.0, "llm_max_retries": 4, "llm_max_tokens": 2048}
+    anthropic_model = build_model_client(
+        Settings(_env_file=None, anthropic_api_key="test", **limits), "writer"
+    ).chat_model
+    openai_model = build_model_client(
+        Settings(
+            _env_file=None,
+            llm_provider="openai",
+            openai_api_key="test",
+            writer_model="w",
+            reviewer_model="r",
+            **limits,
+        ),
+        "writer",
+    ).chat_model
+
+    assert isinstance(anthropic_model, ChatAnthropic)
+    assert isinstance(openai_model, ChatOpenAI)
+    assert (anthropic_model.default_request_timeout, anthropic_model.max_retries) == (33.0, 4)
+    assert anthropic_model.max_tokens == 2048
+    assert (openai_model.request_timeout, openai_model.max_retries) == (33.0, 4)
+    assert openai_model.max_tokens == 2048
+
+
 def test_empty_api_key_counts_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     settings = Settings(_env_file=None)

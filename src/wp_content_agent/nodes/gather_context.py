@@ -116,7 +116,12 @@ async def _research(
     replies: list[AIMessage] = []
     results: list[_ToolResult] = []
     for _ in range(ctx.settings.max_tool_iterations):
-        reply = await ctx.writer.chat(messages, tools)
+        try:
+            reply = await ctx.writer.chat(messages, tools, node="gather_context")
+        except LLMError as exc:
+            # The replies so far were paid for; keep their usage on the error.
+            usage = ctx.writer.usage("gather_context", replies)
+            raise LLMError(str(exc), merge_usage(usage, exc.usage) if exc.usage else usage) from exc
         replies.append(reply)
         messages.append(reply)
         if not reply.tool_calls:
