@@ -3,6 +3,7 @@ from typing import Any
 
 import anthropic
 import httpx
+import openai
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import Runnable, RunnableLambda
@@ -187,8 +188,26 @@ async def test_structured_reports_truncated_output(metadata: dict[str, str]) -> 
     assert info.value.usage.input_tokens == 10
 
 
-async def test_structured_reports_refusal() -> None:
-    client = _unparsed_client(ai(response_metadata={"stop_reason": "refusal"}))
+async def test_structured_reports_truncated_json_despite_the_parse_error() -> None:
+    client = fake_client(ai('{"value": "o', response_metadata={"stop_reason": "max_tokens"}))
+
+    with pytest.raises(LLMError, match="plan: output hit the token limit"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+async def test_structured_reports_openai_length_error() -> None:
+    completion = openai.types.chat.ChatCompletion.model_construct(choices=[], usage=None)
+    client = fake_client(openai.LengthFinishReasonError(completion=completion))
+
+    with pytest.raises(LLMError, match="plan: output hit the token limit"):
+        await client.structured(Answer, [HumanMessage("q")], node="plan")
+
+
+@pytest.mark.parametrize(
+    "metadata", [{"stop_reason": "refusal"}, {"finish_reason": "content_filter"}]
+)
+async def test_structured_reports_refusal(metadata: dict[str, str]) -> None:
+    client = _unparsed_client(ai(response_metadata=metadata))
 
     with pytest.raises(LLMError, match="plan: the model refused"):
         await client.structured(Answer, [HumanMessage("q")], node="plan")

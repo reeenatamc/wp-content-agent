@@ -119,9 +119,10 @@ async def _research(
         try:
             reply = await ctx.writer.chat(messages, tools, node="gather_context")
         except LLMError as exc:
+            if not replies:
+                raise
             # The replies so far were paid for; keep their usage on the error.
-            usage = ctx.writer.usage("gather_context", replies)
-            raise LLMError(str(exc), merge_usage(usage, exc.usage) if exc.usage else usage) from exc
+            raise LLMError(str(exc), ctx.writer.usage("gather_context", replies)) from exc
         replies.append(reply)
         messages.append(reply)
         if not reply.tool_calls:

@@ -242,3 +242,15 @@ async def test_llm_error_mid_loop_carries_usage_of_earlier_replies() -> None:
 
     assert info.value.usage is not None
     assert (info.value.usage.input_tokens, info.value.usage.output_tokens) == (10, 5)
+
+
+async def test_llm_error_on_first_call_has_no_usage() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    writer = fake_client(anthropic.APIConnectionError(request=request))
+
+    with pytest.raises(LLMError, match="gather_context: model call failed") as info:
+        await gather_context(
+            {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+        )
+
+    assert info.value.usage is None
