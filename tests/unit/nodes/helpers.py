@@ -27,8 +27,8 @@ def runtime(
 ) -> Runtime[AgentContext]:
     context = AgentContext(
         settings=Settings(_env_file=None, **settings),  # type: ignore[call-arg]
-        writer=writer or fake_client(),
-        reviewer=reviewer or fake_client(),
-        wordpress=wordpress or object(),
+        writer=fake_client() if writer is None else writer,
+        reviewer=fake_client() if reviewer is None else reviewer,
+        wordpress=object() if wordpress is None else wordpress,
     )
     return Runtime(context=context)
