@@ -1,10 +1,11 @@
+import asyncio
 from typing import Any
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.fakes import fake_client
-from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError
+from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentContext, AgentState, build_graph, next_revision_count
 from wp_content_agent.nodes import NODES
 from wp_content_agent.runner import AgentRunner
@@ -184,7 +185,7 @@ async def test_failure_in_first_node_marks_run_failed() -> None:
     snapshot = await runner.start(BRIEF, run_id="r1")
 
     assert snapshot.status == RunStatus.FAILED
-    assert snapshot.error == "internal error: RuntimeError: boom"
+    assert snapshot.error == "internal error (RuntimeError); see the logs"
 
 
 async def test_failed_run_cannot_be_resumed() -> None:
@@ -204,3 +205,92 @@ async def test_snapshot_totals_tokens() -> None:
     snapshot = await runner.start(BRIEF, run_id="r1")
 
     assert snapshot.total_tokens == 15
+
+
+async def test_publish_failure_after_approval_leaves_nothing_pending() -> None:
+    def publish_draft(state: AgentState) -> dict[str, Any]:
+        raise ToolError("create_draft_post failed: timeout")
+
+    runner = _runner(publish_draft=publish_draft)
+    await runner.start(BRIEF, run_id="r1")
+
+    snapshot = await runner.resume("r1", ApprovalDecision(approved=True))
+
+    assert snapshot.status == RunStatus.FAILED
+    assert snapshot.approval is None
+    assert (await runner._state("r1")).next == ()
+
+
+async def test_failure_before_approval_leaves_nothing_pending() -> None:
+    def write(state: AgentState) -> dict[str, Any]:
+        raise LLMError("write failed")
+
+    runner = _runner(write=write)
+
+    await runner.start(BRIEF, run_id="r1")
+
+    assert (await runner._state("r1")).next == ()
+
+
+async def test_raising_progress_callback_does_not_fail_the_run() -> None:
+    def broken(node: str, update: Any) -> None:
+        raise BrokenPipeError
+
+    runner = _runner()
+
+    snapshot = await runner.start(BRIEF, run_id="r1", on_progress=broken)
+
+    assert snapshot.status == RunStatus.AWAITING_APPROVAL
+
+
+async def test_internal_error_message_hides_details() -> None:
+    def plan(state: AgentState) -> dict[str, Any]:
+        raise RuntimeError("https://user:secret@example.com")
+
+    runner = _runner(plan=plan)
+
+    snapshot = await runner.start(BRIEF, run_id="r1")
+
+    assert snapshot.error is not None
+    assert "secret" not in snapshot.error
+
+
+async def test_cancelled_run_is_marked_failed() -> None:
+    started = asyncio.Event()
+
+    async def write(state: AgentState) -> dict[str, Any]:
+        started.set()
+        await asyncio.Event().wait()
+        return {}
+
+    runner = _runner(write=write)
+    task = asyncio.create_task(runner.start(BRIEF, run_id="r1"))
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert (await runner.get("r1")).status == RunStatus.FAILED
+
+
+async def test_concurrent_approvals_publish_once() -> None:
+    published = 0
+
+    async def publish_draft(state: AgentState) -> dict[str, Any]:
+        nonlocal published
+        published += 1
+        await asyncio.sleep(0)
+        return {"status": RunStatus.DRAFT_CREATED, "wp_post_id": 8}
+
+    runner = _runner(publish_draft=publish_draft)
+    await runner.start(BRIEF, run_id="r1")
+
+    results = await asyncio.gather(
+        runner.resume("r1", ApprovalDecision(approved=True)),
+        runner.resume("r1", ApprovalDecision(approved=True)),
+        return_exceptions=True,
+    )
+
+    assert published == 1
+    assert sum(isinstance(result, RunStateError) for result in results) == 1
