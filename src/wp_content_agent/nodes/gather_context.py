@@ -69,6 +69,11 @@ async def gather_context(state: AgentState, runtime: Runtime[AgentContext]) -> d
     brief = state["brief"]
     task = f"{render_brief(brief)}\n\nOutline:\n{render_outline(state['outline'])}"
 
+    # Before any model call, so a WordPress failure here costs nothing.
+    categories, tags = await asyncio.gather(
+        ctx.wordpress.list_categories(), ctx.wordpress.list_tags()
+    )
+
     async with _http_client(ctx) as http:
         local_tools: list[BaseTool] = list(ctx.extra_tools)
         if brief.source_urls:
@@ -91,9 +96,6 @@ async def gather_context(state: AgentState, runtime: Runtime[AgentContext]) -> d
         usage = merge_usage(loop_usage, exc.usage) if exc.usage else loop_usage
         raise LLMError(str(exc), usage) from exc
 
-    categories, tags = await asyncio.gather(
-        ctx.wordpress.list_categories(), ctx.wordpress.list_tags()
-    )
     notes = ResearchNotes(
         sources=_grounded_sources(findings.sources, results),
         related_posts=_grounded_posts(findings.related_posts, results),

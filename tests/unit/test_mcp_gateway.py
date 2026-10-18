@@ -8,7 +8,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from tests.fakes import FakeWordPressClient
 from wp_content_agent.errors import ToolError
-from wp_content_agent.tools.mcp_gateway import McpWordPress, _server_env
+from wp_content_agent.tools.mcp_gateway import McpWordPress, _server_env, _term_list
 from wp_mcp.server import build_server
 
 
@@ -54,6 +54,11 @@ async def test_truncated_flag_reaches_the_gateway() -> None:
     await http.aclose()
 
     assert tags.truncated
+
+
+def test_unexpected_term_list_becomes_tool_error() -> None:
+    with pytest.raises(ToolError, match=r"list_tags: unexpected result"):
+        _term_list("list_tags", {"result": []})
 
 
 async def test_create_draft_post_returns_structured_result() -> None:

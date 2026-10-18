@@ -7,9 +7,9 @@ from tests.fakes import FakeChatModel, ai, fake_client
 from tests.unit.nodes.fake_wordpress import FakeGateway
 from tests.unit.nodes.helpers import BRIEF, runtime
 from tests.unit.nodes.test_plan import OUTLINE
-from wp_content_agent.errors import LLMError
+from wp_content_agent.errors import LLMError, ToolError
 from wp_content_agent.nodes.gather_context import ResearchFindings, gather_context
-from wp_content_agent.schemas import RelatedPost, RunStatus, SourceNote
+from wp_content_agent.schemas import RelatedPost, RunStatus, SourceNote, TermList
 
 SOURCE = "https://example.com/django-cache"
 PAGE = (
@@ -132,6 +132,23 @@ async def test_gather_context_propagates_llm_errors() -> None:
         await gather_context(
             {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
         )
+
+
+async def test_gather_context_lists_terms_before_paying_for_a_model_call() -> None:
+    class BrokenGateway(FakeGateway):
+        async def list_categories(self) -> TermList:
+            raise ToolError("list_categories: lost connection to wp_mcp")
+
+    writer = fake_client(ai("done"), FINDINGS)
+
+    with pytest.raises(ToolError):
+        await gather_context(
+            {"brief": BRIEF, "outline": OUTLINE},
+            runtime(writer=writer, wordpress=BrokenGateway()),
+        )
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    assert writer.chat_model.calls == []
 
 
 async def test_notes_call_gets_results_as_text_without_tool_blocks() -> None:
