@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class RunStatus(StrEnum):
@@ -48,3 +48,28 @@ class ApprovalDecision(BaseModel):
 
     approved: bool
     note: str = Field(default="", max_length=2000)
+
+
+class RunSnapshot(BaseModel):
+    """Where a run stands, as the CLI and the API report it."""
+
+    run_id: str
+    status: RunStatus
+    approval: ApprovalRequest | None = None
+    wp_post_id: int | None = None
+    edit_url: str | None = None
+    review_passed: bool | None = None
+    revision_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    usage: list[NodeUsage] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_cost_usd(self) -> float:
+        return round(sum(entry.cost_usd for entry in self.usage), 6)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_tokens(self) -> int:
+        return sum(entry.input_tokens + entry.output_tokens for entry in self.usage)

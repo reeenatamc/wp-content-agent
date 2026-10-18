@@ -9,7 +9,13 @@ from wp_content_agent.schemas.context import (
 from wp_content_agent.schemas.draft import Draft
 from wp_content_agent.schemas.outline import Outline, OutlineSection
 from wp_content_agent.schemas.review import CheckName, CheckResult, Review, ReviewVerdict
-from wp_content_agent.schemas.run import ApprovalDecision, ApprovalRequest, NodeUsage, RunStatus
+from wp_content_agent.schemas.run import (
+    ApprovalDecision,
+    ApprovalRequest,
+    NodeUsage,
+    RunSnapshot,
+    RunStatus,
+)
 
 __all__ = [
     "ApprovalDecision",
@@ -26,6 +32,7 @@ __all__ = [
     "ResearchNotes",
     "Review",
     "ReviewVerdict",
+    "RunSnapshot",
     "RunStatus",
     "SourceNote",
     "Term",
