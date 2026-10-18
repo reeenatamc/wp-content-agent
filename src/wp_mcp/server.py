@@ -12,7 +12,7 @@ from pydantic import Field, StringConstraints
 
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
+from wp_mcp.models import CreateDraftInput, DraftCreated, NonBlank, PostDetail, PostSummary, Term
 from wp_mcp.settings import WPSettings
 
 logger = logging.getLogger(__name__)
@@ -81,10 +81,8 @@ def build_server(client: WordPressClient | None = None) -> FastMCP:
     @mcp.tool()
     async def create_draft_post(
         ctx: Ctx,
-        title: Annotated[
-            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
-        ],
-        content_html: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
+        title: Annotated[NonBlank, Field(max_length=200)],
+        content_html: NonBlank,
         slug: Annotated[str, Field(max_length=200)] = "",
         excerpt: str = "",
         categories: list[int] | None = None,

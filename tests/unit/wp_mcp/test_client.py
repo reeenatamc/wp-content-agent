@@ -539,12 +539,17 @@ def test_empty_credentials_in_env_are_reported_as_missing(
         WPSettings(_env_file=None)  # type: ignore[call-arg]
 
 
-def test_negative_max_retries_in_env_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("name", "value"), [("MAX_RETRIES", "-1"), ("TIMEOUT_S", "0"), ("BACKOFF_S", "-1")]
+)
+def test_out_of_range_retry_settings_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
     monkeypatch.setenv("WP_USERNAME", "u")
     monkeypatch.setenv("WP_APP_PASSWORD", "p")
-    monkeypatch.setenv("WP_MAX_RETRIES", "-1")
+    monkeypatch.setenv(f"WP_{name}", value)
 
-    with pytest.raises(ValidationError, match="max_retries"):
+    with pytest.raises(ValidationError, match=name.lower()):
         WPSettings(_env_file=None)  # type: ignore[call-arg]
 
 
@@ -584,7 +589,7 @@ async def test_list_tags_with_malformed_item_raises_invalid_response(
     assert info.value.code == "invalid_response"
 
 
-@pytest.mark.parametrize("term_id", ["9", True, None, 1.5])
+@pytest.mark.parametrize("term_id", ["9", True, None, 1.5, 0, -5])
 async def test_create_tag_with_bad_term_id_raises_the_original_error(
     term_id: object, make_client: Callable[[Handler], WordPressClient]
 ) -> None:
@@ -599,3 +604,12 @@ async def test_create_tag_with_bad_term_id_raises_the_original_error(
         await make_client(handler).create_tag("Python")
 
     assert info.value.code == "term_exists"
+
+
+def test_draft_input_rejects_blank_title_but_keeps_content_whitespace() -> None:
+    with pytest.raises(ValidationError, match="title"):
+        CreateDraftInput(title="   ", content_html="<p>x</p>")
+
+    draft = CreateDraftInput(title="T", content_html="<pre>x\n</pre>\n")
+
+    assert draft.content_html == "<pre>x\n</pre>\n"

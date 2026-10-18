@@ -92,6 +92,7 @@ class WordPressClient:
                 and exc.code == "term_exists"
                 and isinstance(term_id, int)
                 and not isinstance(term_id, bool)
+                and term_id > 0
             ):
                 data = await self._request("GET", f"/tags/{term_id}")
             else:
@@ -211,7 +212,7 @@ def _validate_list[M: BaseModel](model: type[M], data: Any) -> list[M]:
         raise _invalid_response(TypeError(f"expected a list, got {type(data).__name__}"))
     try:
         return [model.model_validate(item) for item in data]
-    except (KeyError, TypeError, ValidationError) as exc:
+    except ValidationError as exc:
         raise _invalid_response(exc) from exc
 
 
