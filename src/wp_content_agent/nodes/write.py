@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from wp_content_agent.graph.context import AgentContext
@@ -9,7 +9,6 @@ from wp_content_agent.graph.state import AgentState, next_revision_count
 from wp_content_agent.nodes.render import (
     render_brief,
     render_context,
-    render_draft,
     render_feedback,
     render_outline,
 )
@@ -44,8 +43,8 @@ answering.
 - category_ids: ids from the notes' existing categories only.
 - tag_names: three to six short tags, reusing existing tag names when they fit."""
 
-REVISION_INSTRUCTIONS = """Revise the draft below to fix every point in the review. Keep \
-what already works; do not rewrite passing sections from scratch."""
+REVISION_INSTRUCTIONS = """Revise your draft above to fix every point in this review. \
+Keep what already works; do not rewrite passing sections from scratch."""
 
 
 async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
@@ -62,12 +61,9 @@ async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, 
     messages: list[BaseMessage] = [writer.system(SYSTEM_PROMPT), writer.human(task, cache=True)]
     previous, review = state.get("draft"), state.get("review")
     if previous is not None and review is not None:
-        messages.append(
-            HumanMessage(
-                f"{REVISION_INSTRUCTIONS}\n\n{render_feedback(review)}\n\n"
-                f"Previous draft:\n{render_draft(previous)}"
-            )
-        )
+        # The previous draft is replayed as the model's own answer, then the review follows.
+        messages.append(AIMessage(previous.model_dump_json()))
+        messages.append(HumanMessage(f"{REVISION_INSTRUCTIONS}\n\n{render_feedback(review)}"))
 
     draft, usage = await writer.structured(Draft, messages, node="write")
     return {

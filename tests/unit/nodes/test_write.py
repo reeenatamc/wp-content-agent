@@ -1,10 +1,11 @@
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
-from tests.fakes import FakeChatModel, ai, fake_client
+from tests.fakes import PRICES, FakeChatModel, ai, fake_client
 from tests.unit.nodes.helpers import BRIEF, runtime
 from tests.unit.nodes.test_plan import OUTLINE
 from wp_content_agent.errors import LLMError
+from wp_content_agent.llm import ModelClient
 from wp_content_agent.nodes.write import write
 from wp_content_agent.schemas import CheckResult, Draft, ResearchNotes, Review, RunStatus, Term
 
@@ -65,11 +66,24 @@ async def test_revision_includes_feedback_and_previous_draft() -> None:
     update = await write(state, runtime(writer=writer))  # type: ignore[arg-type]
 
     assert isinstance(writer.chat_model, FakeChatModel)
-    last = writer.chat_model.calls[0][-1]
+    *_, previous, last = writer.chat_model.calls[0]
+    assert isinstance(previous, AIMessage)
+    assert Draft.model_validate_json(str(previous.content)) == DRAFT
     assert isinstance(last, HumanMessage)
     assert "meta_description_length: 98 chars" in str(last.content)
-    assert "Title: Cache Django querysets" in str(last.content)
     assert update["revision_count"] == 1
+
+
+async def test_system_and_task_are_marked_for_caching() -> None:
+    model = FakeChatModel.scripted(DRAFT)
+    writer = ModelClient(model, "fake-model", PRICES, cache_prompts=True)
+
+    await write(_state(), runtime(writer=writer))  # type: ignore[arg-type]
+
+    system, task = model.calls[0]
+    for message in (system, task):
+        assert isinstance(message.content, list)
+        assert message.content[0]["cache_control"] == {"type": "ephemeral"}
 
 
 async def test_write_without_context_still_forbids_statistics() -> None:
