@@ -30,3 +30,11 @@ class ResearchNotes(BaseModel):
     )
     categories: list[Term] = Field(default_factory=list)
     tags: list[Term] = Field(default_factory=list)
+
+
+class CreatedDraft(BaseModel):
+    id: int
+    status: str
+    link: str
+    edit_url: str
+    meta_description_saved: bool = False

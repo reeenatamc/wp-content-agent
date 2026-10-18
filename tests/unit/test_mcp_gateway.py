@@ -20,8 +20,10 @@ async def connected_gateway() -> AsyncIterator[McpWordPress]:
     server = build_server(FakeWordPressClient(http))
     async with create_connected_server_and_client_session(server) as session:
         tools = await load_mcp_tools(session)
-        yield McpWordPress(session, tools, call_timeout_s=5)
-    await http.aclose()
+        try:
+            yield McpWordPress(session, tools, call_timeout_s=5)
+        finally:
+            await http.aclose()
 
 
 async def test_model_only_gets_read_only_tools() -> None:
@@ -44,8 +46,8 @@ async def test_create_draft_post_returns_structured_result() -> None:
     async with connected_gateway() as gateway:
         created = await gateway.create_draft_post(title="T", content_html="<p>x</p>", tags=[4])
 
-    assert created["id"] == 8
-    assert created["status"] == "draft"
+    assert created.id == 8
+    assert created.status == "draft"
 
 
 async def test_tool_errors_become_tool_error() -> None:
@@ -62,3 +64,17 @@ def test_server_env_forwards_only_wordpress_settings(monkeypatch: pytest.MonkeyP
 
     assert env["WP_USERNAME"] == "agent"
     assert "ANTHROPIC_API_KEY" not in env
+
+
+async def test_research_tool_returns_json_for_the_model() -> None:
+    async with connected_gateway() as gateway:
+        text = await gateway.run_research_tool("list_posts", {"search": "cache"})
+
+    assert '"cache:10"' in text
+
+
+async def test_research_tool_refuses_write_tools() -> None:
+    async with connected_gateway() as gateway:
+        text = await gateway.run_research_tool("create_draft_post", {"title": "x"})
+
+    assert text.startswith("error: unknown tool")

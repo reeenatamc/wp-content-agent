@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from wp_content_agent.llm import ModelClient
-from wp_content_agent.schemas import Term
+from wp_content_agent.schemas import CreatedDraft, Term
 from wp_content_agent.settings import Settings
 
 
@@ -11,7 +11,11 @@ class WordPressGateway(Protocol):
 
     @property
     def research_tools(self) -> list[Any]:
-        """Read-only LangChain tools the gather_context model may call."""
+        """Read-only LangChain tools whose schemas are bound to the gather_context model."""
+        ...
+
+    async def run_research_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Run one research tool call; failures come back as text for the model."""
         ...
 
     async def list_categories(self) -> list[Term]: ...
@@ -20,7 +24,7 @@ class WordPressGateway(Protocol):
 
     async def create_tag(self, name: str) -> Term: ...
 
-    async def create_draft_post(self, **fields: Any) -> dict[str, Any]: ...
+    async def create_draft_post(self, **fields: Any) -> CreatedDraft: ...
 
 
 @dataclass(frozen=True)
