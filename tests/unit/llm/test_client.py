@@ -135,3 +135,16 @@ def test_system_is_plain_text_without_caching() -> None:
     message = fake_client().system("rules")
 
     assert message.content == "rules"
+
+
+def test_human_is_cached_only_when_asked_and_enabled() -> None:
+    cached = ModelClient(FakeChatModel.scripted(), "fake-model", PRICES, cache_prompts=True)
+
+    marked = cached.human("task", cache=True)
+    unmarked = cached.human("task")
+    disabled = fake_client().human("task", cache=True)
+
+    assert marked.content == [
+        {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert (unmarked.content, disabled.content) == ("task", "task")

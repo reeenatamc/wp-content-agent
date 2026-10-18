@@ -5,7 +5,7 @@ import anthropic
 import openai
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from wp_content_agent.errors import LLMError
@@ -37,8 +37,13 @@ class ModelClient:
         """OpenAI caches long prefixes automatically, so only Anthropic needs the marker."""
         if not self.cache_prompts:
             return SystemMessage(text)
-        block = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
-        return SystemMessage(content=[block])
+        return SystemMessage(content=[_cached_block(text)])
+
+    def human(self, text: str, *, cache: bool = False) -> HumanMessage:
+        """A user turn; with cache=True it ends a cached prefix that later calls reuse."""
+        if not (cache and self.cache_prompts):
+            return HumanMessage(text)
+        return HumanMessage(content=[_cached_block(text)])
 
     async def structured[T: BaseModel](
         self, schema: type[T], messages: Sequence[BaseMessage], *, node: str
@@ -70,3 +75,7 @@ class ModelClient:
 
     def usage(self, node: str, messages: Sequence[BaseMessage]) -> NodeUsage:
         return usage_from_messages(node, self.model_name, messages, self._prices)
+
+
+def _cached_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
