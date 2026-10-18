@@ -1,0 +1,6 @@
+topic: Choosing a PostgreSQL index type for a slow query
+audience: Developers who write SQL but rarely tune it
+target_words: 800
+keywords: [postgresql, indexes, btree, gin]
+source_urls:
+  - https://www.postgresql.org/docs/current/indexes-types.html

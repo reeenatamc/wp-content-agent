@@ -1,0 +1,7 @@
+topic: Adding timeouts to asyncio code in Python
+audience: Python developers moving from threads to asyncio
+tone: direct
+target_words: 700
+keywords: [python, asyncio, timeouts]
+source_urls:
+  - https://docs.python.org/3/library/asyncio-task.html
