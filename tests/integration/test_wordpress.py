@@ -56,6 +56,24 @@ async def test_client_creates_a_draft_with_meta(
     assert post.status == "draft"
 
 
+async def test_create_draft_twice_returns_the_same_post(
+    wordpress: WordPressClient, cleanup: Cleanup
+) -> None:
+    draft = CreateDraftInput(
+        title="Idempotent integration draft",
+        slug=f"idempotent-{uuid.uuid4().hex[:8]}",
+        content_html="<!-- wp:paragraph --><p>Body</p><!-- /wp:paragraph -->",
+    )
+
+    first = await wordpress.create_draft_post(draft)
+    cleanup.posts.append(first.id)
+    second = await wordpress.create_draft_post(draft)
+
+    assert first.reused is False
+    assert second.reused is True
+    assert second.id == first.id
+
+
 async def test_create_tag_twice_returns_the_same_tag(
     wordpress: WordPressClient, cleanup: Cleanup
 ) -> None:

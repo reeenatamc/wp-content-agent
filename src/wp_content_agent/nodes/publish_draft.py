@@ -47,6 +47,8 @@ async def publish_draft(state: AgentState, runtime: Runtime[AgentContext]) -> di
             "WordPress did not store the meta description; install the wpagent-meta "
             "mu-plugin or set WP_META_DESCRIPTION_KEY to your SEO plugin's field"
         )
+    if created.reused:
+        warnings.append(f"reused existing draft {created.id} instead of creating a second one")
     logger.info("created draft %s: %s", created.id, created.edit_url)
     return {
         "wp_post_id": created.id,
