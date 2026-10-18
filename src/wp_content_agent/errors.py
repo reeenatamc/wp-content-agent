@@ -27,3 +27,11 @@ class ToolError(AgentError):
 
 class FetchError(ToolError):
     """A source URL could not be fetched or had no readable text."""
+
+
+class RunNotFoundError(AgentError):
+    """No run exists with the given id."""
+
+
+class RunStateError(AgentError):
+    """The run is not in a state that allows the requested action."""
