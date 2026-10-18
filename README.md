@@ -24,6 +24,7 @@ flowchart LR
     review -- "failed, revisions < 2" --> write
     review -- "passed, or out of revisions" --> human_approval
     human_approval -- approved --> publish_draft
+    human_approval -- "revise with a note" --> write
     human_approval -- rejected --> done([end])
     publish_draft --> done
 
@@ -38,7 +39,7 @@ flowchart LR
 | `gather_context` | A tool loop: fetches the brief's source URLs and searches the site's posts, then writes notes. Facts whose numbers do not appear on the fetched page are dropped. |
 | `write` | Writes the post as plain semantic HTML with a title, slug, excerpt, meta description, categories from the site and tags. |
 | `review` | Code checks (meta description length 140 to 160 characters, allowed HTML, numbers not found in the sources) plus a model checklist. Returns pass or fail and a fix for each failed check. |
-| `human_approval` | A LangGraph `interrupt`. The CLI asks; the API returns `awaiting_approval` and waits for approve or reject. |
+| `human_approval` | A LangGraph `interrupt`. The CLI asks; the API returns `awaiting_approval` and waits for approve, reject or revise. A revise decision sends the draft back to `write` with the person's note, then through `review`, and stops here again. |
 | `publish_draft` | Converts the HTML to Gutenberg blocks, creates missing tags and the post with status `draft`, and returns the edit URL. |
 
 Every node appends its token use and cost to the run, and the state is checkpointed in
@@ -70,6 +71,7 @@ uv run wpagent status <run_id>
 uv run wpagent approve <run_id> --note "looks good"
 uv run wpagent reject <run_id>
 uv run wpagent retry <run_id>                                   # run publish_draft again after it failed
+uv run wpagent revise <run_id> --note "shorter intro"          # back to the writer
 uv run wpagent serve                                            # HTTP API on :8000
 ```
 
@@ -102,6 +104,7 @@ limits are all settings: `.env.example` lists the common ones and
 | `POST` | `/runs/{id}/approve` | Approve, with an optional note. The draft is created in the background. |
 | `POST` | `/runs/{id}/reject` | Reject. Nothing is created. |
 | `POST` | `/runs/{id}/retry` | Run `publish_draft` again for a run that failed there, using the approved draft. No model calls. |
+| `POST` | `/runs/{id}/revise` | Send the draft back to the writer. Body: `{"note": "..."}`, 1 to 2000 characters, required. The run writes, reviews and waits for approval again. `409` when no human revisions are left. |
 | `POST` | `/webhooks/n8n` | Same as `POST /runs`, authenticated with `X-Webhook-Secret`. |
 
 The `/runs` endpoints take `Authorization: Bearer $API_TOKEN` when `API_TOKEN` is set, and
@@ -193,8 +196,9 @@ strict mode and pytest on every push.
 
 ## Limitations
 
-- Rejecting a draft ends the run. There is no "revise with this feedback" path yet
-  ([#8](https://github.com/reeenatamc/wp-content-agent/issues/8)).
+- Rejecting a draft ends the run. To change a draft instead, use revise; each run allows
+  `MAX_HUMAN_REVISIONS` of them (2 by default). A human revision counts as a write, so it
+  does not give the automatic review loop (`MAX_REVISIONS`) a fresh budget.
 - Only a run that failed inside `publish_draft` can be retried; other failures need a
   new run. If the failed request timed out, WordPress may have created the post anyway,
   so check the site before retrying.
@@ -208,8 +212,8 @@ strict mode and pytest on every push.
   cacheable length, which is the case for short briefs.
 - The per-run lock that stops two approvals at once works inside one process. Running
   several API workers on the same checkpoint file is not supported.
-- `status`, `approve`, `reject` and `retry` load the full configuration, including the
-  model key, even though they do not call a model.
+- `status`, `approve`, `reject`, `revise` and `retry` load the full configuration,
+  including the model key, even though they do not call a model.
 - Number checks catch invented statistics, not invented claims without numbers; that part
   rests on the model reviewer.
 

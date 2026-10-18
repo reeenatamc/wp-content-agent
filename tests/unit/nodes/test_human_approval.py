@@ -33,11 +33,12 @@ def test_approval_request_names_categories_and_failed_checks() -> None:
     state = _state()
     state["review"] = combine(ALL_PASS, GOOD.model_copy(update={"meta_description": "x"}), [])
 
-    request = approval_request(state)  # type: ignore[arg-type]
+    request = approval_request(state, 2)  # type: ignore[arg-type]
 
     assert request.category_names == ["Backend", "9"]
     assert request.failed_checks == ["meta_description_length: 1 characters; needs 140 to 160"]
     assert not request.review_passed
+    assert request.human_revisions_left == 2
 
 
 @pytest.mark.parametrize(
@@ -63,3 +64,39 @@ async def test_invalid_resume_value_raises_agent_error() -> None:
 
     with pytest.raises(AgentError, match="invalid approval decision"):
         await graph.ainvoke(Command(resume={"approved": "yes"}), config, context=ctx)
+
+
+@pytest.mark.parametrize(("used", "left"), [(0, 2), (1, 1), (2, 0), (5, 0)])
+def test_approval_request_counts_human_revisions_left(used: int, left: int) -> None:
+    state = {**_state(), "human_revision_count": used}
+
+    request = approval_request(state, 2)  # type: ignore[arg-type]
+
+    assert request.human_revisions_left == left
+
+
+async def test_revise_sends_the_run_back_to_write_with_the_note() -> None:
+    graph, config, ctx = _graph(), {"configurable": {"thread_id": "t"}}, runtime().context
+    await graph.ainvoke({**_state(), "human_revision_count": 1}, config, context=ctx)
+
+    result = await graph.ainvoke(
+        Command(resume={"approved": False, "revise": True, "note": "shorter intro"}),
+        config,
+        context=ctx,
+    )
+
+    assert result["status"] == RunStatus.WRITING
+    assert result["human_feedback"] == "shorter intro"
+    assert result["approval_note"] == "shorter intro"
+    assert result["human_revision_count"] == 2
+
+
+async def test_revise_with_no_human_revisions_left_raises_agent_error() -> None:
+    graph, config = _graph(), {"configurable": {"thread_id": "t"}}
+    ctx = runtime(max_human_revisions=1).context
+    await graph.ainvoke({**_state(), "human_revision_count": 1}, config, context=ctx)
+
+    with pytest.raises(AgentError, match="no human revisions left"):
+        await graph.ainvoke(
+            Command(resume={"approved": False, "revise": True, "note": "x"}), config, context=ctx
+        )

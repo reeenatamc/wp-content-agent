@@ -23,6 +23,9 @@ class AgentState(TypedDict, total=False):
     review: Review
     revision_count: int
     approval_note: str
+    # The editor's note to apply on the next write. The write node clears it.
+    human_feedback: str
+    human_revision_count: int
     wp_post_id: int
     edit_url: str
     status: RunStatus

@@ -21,6 +21,7 @@ def _approval(**overrides: object) -> ApprovalRequest:
         "review_passed": False,
         "failed_checks": ["meta_length: 120 chars", "headings: none"],
         "revision_count": 2,
+        "human_revisions_left": 2,
     }
     return ApprovalRequest.model_validate(values | overrides)
 

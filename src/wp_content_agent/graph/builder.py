@@ -22,9 +22,12 @@ def route_after_review(
     return "human_approval"
 
 
-def route_after_approval(state: AgentState) -> Literal["publish_draft", "__end__"]:
-    if state.get("status") == RunStatus.PUBLISHING:
-        return "publish_draft"
+def route_after_approval(state: AgentState) -> Literal["write", "publish_draft", "__end__"]:
+    match state.get("status"):
+        case RunStatus.WRITING:
+            return "write"
+        case RunStatus.PUBLISHING:
+            return "publish_draft"
     return "__end__"
 
 

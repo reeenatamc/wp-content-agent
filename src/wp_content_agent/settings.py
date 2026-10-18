@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     model_prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
 
     max_revisions: int = Field(default=2, ge=0)
+    max_human_revisions: int = Field(default=2, ge=0)
     max_tool_iterations: int = Field(default=6, ge=1)
 
     fetch_timeout_s: float = Field(default=15.0, gt=0)

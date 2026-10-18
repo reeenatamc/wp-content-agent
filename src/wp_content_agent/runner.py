@@ -108,10 +108,8 @@ class AgentRunner:
         on_progress: ProgressCallback | None = None,
     ) -> RunSnapshot:
         async with self._lock(run_id):
-            current = _snapshot(run_id, await self._state(run_id))
-            if current.approval is None:
-                raise RunStateError(f"run {run_id} is {current.status}, not awaiting approval")
-            logger.info("resuming run %s: approved=%s", run_id, decision.approved)
+            ensure_can_resume(_snapshot(run_id, await self._state(run_id)), decision)
+            logger.info("resuming run %s: %s", run_id, _decision_kind(decision))
             payload: Command[Any] = Command(resume=decision.model_dump())
             return await self._drive(payload, run_id, on_progress)
 
@@ -202,6 +200,22 @@ def ensure_can_retry(snapshot: RunSnapshot) -> None:
             f"run {snapshot.run_id} cannot be retried; only a run that failed while"
             " creating the draft can"
         )
+
+
+def ensure_can_resume(snapshot: RunSnapshot, decision: ApprovalDecision) -> None:
+    """Raise RunStateError when the run cannot take this decision. Nothing has run yet."""
+    if snapshot.approval is None:
+        raise RunStateError(f"run {snapshot.run_id} is {snapshot.status}, not awaiting approval")
+    if decision.revise and snapshot.approval.human_revisions_left == 0:
+        raise RunStateError(
+            f"run {snapshot.run_id} has no human revisions left; approve or reject the draft"
+        )
+
+
+def _decision_kind(decision: ApprovalDecision) -> str:
+    if decision.revise:
+        return "revise"
+    return "approve" if decision.approved else "reject"
 
 
 def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:

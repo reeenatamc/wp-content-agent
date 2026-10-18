@@ -6,7 +6,7 @@ from tests.unit.nodes.helpers import BRIEF, runtime
 from tests.unit.nodes.test_plan import OUTLINE
 from wp_content_agent.errors import LLMError
 from wp_content_agent.llm import ModelClient
-from wp_content_agent.nodes.write import write
+from wp_content_agent.nodes.write import HUMAN_REVISION_INSTRUCTIONS, write
 from wp_content_agent.schemas import CheckResult, Draft, ResearchNotes, Review, RunStatus, Term
 
 DRAFT = Draft(
@@ -102,3 +102,32 @@ async def test_write_raises_llm_error_on_unparseable_output() -> None:
 
     with pytest.raises(LLMError):
         await write(_state(), runtime(writer=writer))  # type: ignore[arg-type]
+
+
+async def test_human_feedback_is_applied_and_cleared() -> None:
+    writer = fake_client(DRAFT)
+    state = _state(draft=DRAFT, review=REVIEW, revision_count=0, human_feedback="shorter intro")
+
+    update = await write(state, runtime(writer=writer))  # type: ignore[arg-type]
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    *_, previous, last = writer.chat_model.calls[0]
+    assert isinstance(previous, AIMessage)
+    assert Draft.model_validate_json(str(previous.content)) == DRAFT
+    assert isinstance(last, HumanMessage)
+    assert str(last.content).startswith(HUMAN_REVISION_INSTRUCTIONS)
+    assert str(last.content).endswith("shorter intro")
+    assert "meta_description_length" not in str(last.content)
+    assert update["human_feedback"] == ""
+    assert update["revision_count"] == 1
+
+
+async def test_write_without_human_feedback_clears_the_field_and_uses_the_review() -> None:
+    writer = fake_client(DRAFT)
+    state = _state(draft=DRAFT, review=REVIEW, revision_count=0, human_feedback="")
+
+    update = await write(state, runtime(writer=writer))  # type: ignore[arg-type]
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    assert "meta_description_length: 98 chars" in str(writer.chat_model.calls[0][-1].content)
+    assert update["human_feedback"] == ""

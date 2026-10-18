@@ -81,9 +81,9 @@ def flaky_publish(failures: int = 1) -> Any:
     return publish_draft
 
 
-def fake_runner(**overrides: Any) -> AgentRunner:
+def fake_runner(settings: Settings | None = None, **overrides: Any) -> AgentRunner:
     context = AgentContext(
-        settings=Settings(_env_file=None),  # type: ignore[call-arg]
+        settings=settings or Settings(_env_file=None),  # type: ignore[call-arg]
         writer=fake_client(),
         reviewer=fake_client(),
         wordpress=object(),  # type: ignore[arg-type]

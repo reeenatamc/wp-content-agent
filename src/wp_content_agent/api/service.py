@@ -7,7 +7,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
-from wp_content_agent.runner import AgentRunner, ensure_can_retry
+from wp_content_agent.runner import AgentRunner, ensure_can_resume, ensure_can_retry
 from wp_content_agent.schemas import ApprovalDecision, Brief, RunSnapshot, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,7 @@ class RunService:
         self._busy.add(run_id)
         try:
             snapshot = await self._runner.get(run_id)
-            if snapshot.approval is None:
-                raise RunStateError(f"run {run_id} is {snapshot.status}, not awaiting approval")
+            ensure_can_resume(snapshot, decision)
         except BaseException:
             self._busy.discard(run_id)
             raise

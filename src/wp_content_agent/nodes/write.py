@@ -47,6 +47,9 @@ Count before answering.
 REVISION_INSTRUCTIONS = """Revise your draft above to fix every point in this review. \
 Keep what already works; do not rewrite passing sections from scratch."""
 
+HUMAN_REVISION_INSTRUCTIONS = """Revise your draft above to apply this note from the editor. \
+Change only what the note asks for and keep everything else."""
+
 
 async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, Any]:
     writer = runtime.context.writer
@@ -61,7 +64,12 @@ async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, 
     # The system prompt and the task stay identical across revisions, so they are cached.
     messages: list[BaseMessage] = [writer.system(SYSTEM_PROMPT), writer.human(task, cache=True)]
     previous, review = state.get("draft"), state.get("review")
-    if previous is not None and review is not None:
+    human_feedback = state.get("human_feedback", "")
+    if previous is not None and human_feedback:
+        # The editor's note wins over review feedback for this call.
+        messages.append(AIMessage(previous.model_dump_json()))
+        messages.append(HumanMessage(f"{HUMAN_REVISION_INSTRUCTIONS}\n\n{human_feedback}"))
+    elif previous is not None and review is not None:
         # The previous draft is replayed as the model's own answer, then the review follows.
         messages.append(AIMessage(previous.model_dump_json()))
         messages.append(HumanMessage(f"{REVISION_INSTRUCTIONS}\n\n{render_feedback(review)}"))
@@ -69,7 +77,10 @@ async def write(state: AgentState, runtime: Runtime[AgentContext]) -> dict[str, 
     draft, usage = await writer.structured(Draft, messages, node="write")
     return {
         "draft": _known_categories(draft, notes),
+        # A human revision also counts as a write, but it does not reset the automatic
+        # review budget (MAX_REVISIONS): that keeps counting across the whole run.
         "revision_count": next_revision_count(state),
+        "human_feedback": "",
         "status": RunStatus.REVIEWING,
         "usage": [usage],
     }
