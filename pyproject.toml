@@ -3,6 +3,8 @@ name = "wp-content-agent"
 version = "0.1.0"
 description = "LangGraph agent that turns a content brief into a WordPress draft, using an MCP server for WordPress"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "renataa", email = "116390061+reeenatamc@users.noreply.github.com" }
 ]
