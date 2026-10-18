@@ -130,11 +130,11 @@ async def test_list_tags_runs_through_the_session(server: FastMCP) -> None:
     result = await _call(server, "list_tags", {"search": "dj"})
 
     assert not result.isError
-    assert result.structuredContent["result"][0]["slug"] == "django"
+    assert result.structuredContent["terms"][0]["slug"] == "django"
 
 
 async def test_list_categories_runs_through_the_session(server: FastMCP) -> None:
     result = await _call(server, "list_categories", {})
 
     assert not result.isError
-    assert result.structuredContent["result"][0]["slug"] == "backend"
+    assert result.structuredContent["terms"][0]["slug"] == "backend"

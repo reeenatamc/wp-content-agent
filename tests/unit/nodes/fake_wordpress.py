@@ -4,7 +4,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from wp_content_agent.errors import ToolError
-from wp_content_agent.schemas import CreatedDraft, Term
+from wp_content_agent.schemas import CreatedDraft, Term, TermList
 
 POSTS = [
     {
@@ -24,11 +24,18 @@ class FakeGateway:
     """In-memory WordPressGateway that records every call."""
 
     def __init__(
-        self, *, tags: list[Term] | None = None, fail_tags: set[str] | None = None
+        self,
+        *,
+        tags: list[Term] | None = None,
+        fail_tags: set[str] | None = None,
+        truncated_categories: bool = False,
+        truncated_tags: bool = False,
     ) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.tags = [Term(id=4, name="django", slug="django")] if tags is None else tags
         self.fail_tags = fail_tags or set()
+        self.truncated_categories = truncated_categories
+        self.truncated_tags = truncated_tags
         self.created: list[dict[str, Any]] = []
 
     @property
@@ -43,13 +50,16 @@ class FakeGateway:
             return json.dumps({"result": POSTS})
         return f"error: unknown tool {name}"
 
-    async def list_categories(self) -> list[Term]:
+    async def list_categories(self) -> TermList:
         self.calls.append(("list_categories", None))
-        return [Term(id=1, name="Backend", slug="backend")]
+        return TermList(
+            terms=[Term(id=1, name="Backend", slug="backend")],
+            truncated=self.truncated_categories,
+        )
 
-    async def list_tags(self, search: str = "") -> list[Term]:
+    async def list_tags(self, search: str = "") -> TermList:
         self.calls.append(("list_tags", search))
-        return list(self.tags)
+        return TermList(terms=list(self.tags), truncated=self.truncated_tags)
 
     async def create_tag(self, name: str) -> Term:
         self.calls.append(("create_tag", name))

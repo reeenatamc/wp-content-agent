@@ -12,7 +12,15 @@ from pydantic import Field, StringConstraints
 
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, NonBlank, PostDetail, PostSummary, Term
+from wp_mcp.models import (
+    CreateDraftInput,
+    DraftCreated,
+    NonBlank,
+    PostDetail,
+    PostSummary,
+    Term,
+    TermList,
+)
 from wp_mcp.settings import WPSettings
 
 logger = logging.getLogger(__name__)
@@ -61,13 +69,16 @@ def build_server(client: WordPressClient | None = None) -> FastMCP:
         return await _guard(wp(ctx).list_posts(search, per_page))
 
     @mcp.tool()
-    async def list_categories(ctx: Ctx) -> list[Term]:
-        """List all categories with their ids."""
+    async def list_categories(ctx: Ctx) -> TermList:
+        """List all categories with their ids; `truncated` is true if the list was cut."""
         return await _guard(wp(ctx).list_categories())
 
     @mcp.tool()
-    async def list_tags(ctx: Ctx, search: Annotated[str, Field(max_length=100)] = "") -> list[Term]:
-        """List tags with their ids, optionally filtered by a search term."""
+    async def list_tags(ctx: Ctx, search: Annotated[str, Field(max_length=100)] = "") -> TermList:
+        """List tags with their ids, optionally filtered by a search term.
+
+        `truncated` is true if the list was cut.
+        """
         return await _guard(wp(ctx).list_tags(search))
 
     @mcp.tool()

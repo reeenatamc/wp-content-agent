@@ -122,7 +122,7 @@ async def test_retries_on_503_then_succeeds(
     categories = await make_client(handler).list_categories()
 
     assert calls == 2
-    assert categories[0].name == "News"
+    assert categories.terms[0].name == "News"
 
 
 async def test_no_retry_on_400(make_client: Callable[[Handler], WordPressClient]) -> None:
@@ -404,7 +404,8 @@ async def test_terms_follow_total_pages_header(
     tags = await make_client(handler).list_tags()
 
     assert pages == ["1", "2", "3"]
-    assert [tag.id for tag in tags] == [1, 2, 3]
+    assert [tag.id for tag in tags.terms] == [1, 2, 3]
+    assert not tags.truncated
 
 
 async def test_terms_stop_at_max_pages_with_warning(
@@ -421,10 +422,23 @@ async def test_terms_stop_at_max_pages_with_warning(
     client = WordPressClient(http, settings.model_copy(update={"max_term_pages": 2}))
 
     with caplog.at_level("WARNING"):
-        await client.list_categories()
+        result = await client.list_categories()
 
     assert calls == 2
+    assert result.truncated
     assert "WP_MAX_TERM_PAGES" in caplog.text
+
+
+async def test_terms_are_not_truncated_when_pages_fit_the_limit(settings: WPSettings) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[], headers={"X-WP-TotalPages": "2"})
+
+    http = httpx.AsyncClient(base_url="http://wp.test", transport=httpx.MockTransport(handler))
+    client = WordPressClient(http, settings.model_copy(update={"max_term_pages": 2}))
+
+    result = await client.list_categories()
+
+    assert not result.truncated
 
 
 async def test_terms_without_total_pages_header_read_one_page(
@@ -523,7 +537,7 @@ async def test_terms_repeated_across_pages_are_deduped(
 
     tags = await make_client(handler).list_tags()
 
-    assert [tag.id for tag in tags] == [1, 2]
+    assert [tag.id for tag in tags.terms] == [1, 2]
 
 
 def test_term_pages_must_be_positive() -> None:

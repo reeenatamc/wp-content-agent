@@ -90,7 +90,7 @@ async def test_seeded_content_is_listed(wordpress: WordPressClient) -> None:
     categories = await wordpress.list_categories()
     posts = await wordpress.list_posts(search="caching")
 
-    assert "Backend" in {category.name for category in categories}
+    assert "Backend" in {category.name for category in categories.terms}
     assert "Django caching basics" in {post.title for post in posts}
 
 
@@ -101,7 +101,7 @@ async def test_mcp_gateway_lists_research_tools_and_terms() -> None:
         output = await gateway.run_research_tool("list_posts", {"search": "django"})
 
     assert tools == {"list_posts", "list_tags", "get_post"}
-    assert "django" in {tag.name for tag in tags}
+    assert "django" in {tag.name for tag in tags.terms}
     assert "Django caching basics" in output
 
 
@@ -147,7 +147,7 @@ async def test_full_graph_creates_a_gutenberg_draft(
         pending = await runner.start(brief, run_id="it")
         done = await runner.resume("it", ApprovalDecision(approved=True))
         tags = await wordpress.list_tags(search=new_tag)
-        cleanup.tags.extend(tag.id for tag in tags)
+        cleanup.tags.extend(tag.id for tag in tags.terms)
         if done.wp_post_id is not None:
             cleanup.posts.append(done.wp_post_id)
 

@@ -206,7 +206,8 @@ strict mode and pytest on every push.
 - The Gutenberg converter is tested against the block grammar, not against the editor
   itself, so an unusual structure may open as a Custom HTML block.
 - If the site has more categories or tags than `WP_MAX_TERM_PAGES` allows, the list is
-  truncated and that only shows in the log.
+  truncated. The run gets a warning and the log says so, but the writer only sees part of
+  the list.
 - Prompt caching does nothing when a prompt is shorter than the provider's minimum
   cacheable length, which is the case for short briefs.
 - The per-run lock that stops two approvals at once works inside one process. Running

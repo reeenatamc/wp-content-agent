@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from wp_content_agent.errors import ToolError
 from wp_content_agent.graph.context import WordPressGateway
-from wp_content_agent.schemas import CreatedDraft, Term
+from wp_content_agent.schemas import CreatedDraft, Term, TermList
 from wp_content_agent.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -40,11 +40,11 @@ class McpWordPress:
     def research_tools(self) -> list[Any]:
         return list(self._tools)
 
-    async def list_categories(self) -> list[Term]:
-        return _terms(await self._call("list_categories", {}))
+    async def list_categories(self) -> TermList:
+        return _term_list("list_categories", await self._call("list_categories", {}))
 
-    async def list_tags(self, search: str = "") -> list[Term]:
-        return _terms(await self._call("list_tags", {"search": search}))
+    async def list_tags(self, search: str = "") -> TermList:
+        return _term_list("list_tags", await self._call("list_tags", {"search": search}))
 
     async def create_tag(self, name: str) -> Term:
         return Term.model_validate(await self._call("create_tag", {"name": name}))
@@ -81,9 +81,11 @@ class McpWordPress:
         return result.structuredContent
 
 
-def _terms(data: dict[str, Any]) -> list[Term]:
-    # FastMCP wraps list results as {"result": [...]}.
-    return [Term.model_validate(item) for item in data.get("result", [])]
+def _term_list(name: str, data: dict[str, Any]) -> TermList:
+    try:
+        return TermList.model_validate(data)
+    except ValidationError as exc:
+        raise ToolError(f"{name}: unexpected result: {exc}") from exc
 
 
 def _server_env() -> dict[str, str]:

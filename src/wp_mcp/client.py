@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
+from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term, TermList
 from wp_mcp.settings import WPSettings
 
 logger = logging.getLogger(__name__)
@@ -53,17 +53,18 @@ class WordPressClient:
         data = await self._request("GET", "/posts", params=params)
         return _validate_list(PostSummary, data)
 
-    async def list_categories(self) -> list[Term]:
+    async def list_categories(self) -> TermList:
         return await self._list_terms("/categories", {})
 
-    async def list_tags(self, search: str = "") -> list[Term]:
+    async def list_tags(self, search: str = "") -> TermList:
         return await self._list_terms("/tags", {"search": search} if search else {})
 
-    async def _list_terms(self, path: str, params: dict[str, Any]) -> list[Term]:
+    async def _list_terms(self, path: str, params: dict[str, Any]) -> TermList:
         """Read every page of a taxonomy, following X-WP-TotalPages."""
         terms: dict[int, Term] = {}
         pages = 1
         page = 1
+        truncated = False
         while page <= pages:
             query = {**params, "per_page": 100, "page": page, "_fields": "id,name,slug"}
             response = await self._send("GET", path, params=query)
@@ -78,9 +79,10 @@ class WordPressClient:
                     pages,
                     page,
                 )
+                truncated = True
                 break
             page += 1
-        return list(terms.values())
+        return TermList(terms=list(terms.values()), truncated=truncated)
 
     async def create_tag(self, name: str) -> Term:
         try:

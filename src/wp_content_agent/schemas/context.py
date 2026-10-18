@@ -9,6 +9,13 @@ class Term(BaseModel):
     slug: str
 
 
+class TermList(BaseModel):
+    """Categories or tags as WordPress returned them."""
+
+    terms: list[Term]
+    truncated: bool = False
+
+
 class SourceNote(BaseModel):
     url: str
     title: str

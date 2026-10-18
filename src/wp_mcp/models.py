@@ -44,6 +44,12 @@ class Term(BaseModel):
     slug: str
 
 
+class TermList(BaseModel):
+    terms: list[Term]
+    # True when the taxonomy has more pages than WP_MAX_TERM_PAGES allows.
+    truncated: bool = False
+
+
 class PostDetail(BaseModel):
     id: int
     title: str

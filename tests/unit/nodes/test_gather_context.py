@@ -7,9 +7,9 @@ from tests.fakes import FakeChatModel, ai, fake_client
 from tests.unit.nodes.fake_wordpress import FakeGateway
 from tests.unit.nodes.helpers import BRIEF, runtime
 from tests.unit.nodes.test_plan import OUTLINE
-from wp_content_agent.errors import LLMError
+from wp_content_agent.errors import LLMError, ToolError
 from wp_content_agent.nodes.gather_context import ResearchFindings, gather_context
-from wp_content_agent.schemas import RelatedPost, RunStatus, SourceNote
+from wp_content_agent.schemas import RelatedPost, RunStatus, SourceNote, TermList
 
 SOURCE = "https://example.com/django-cache"
 PAGE = (
@@ -134,6 +134,23 @@ async def test_gather_context_propagates_llm_errors() -> None:
         )
 
 
+async def test_gather_context_lists_terms_before_paying_for_a_model_call() -> None:
+    class BrokenGateway(FakeGateway):
+        async def list_categories(self) -> TermList:
+            raise ToolError("list_categories: lost connection to wp_mcp")
+
+    writer = fake_client(ai("done"), FINDINGS)
+
+    with pytest.raises(ToolError):
+        await gather_context(
+            {"brief": BRIEF, "outline": OUTLINE},
+            runtime(writer=writer, wordpress=BrokenGateway()),
+        )
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    assert writer.chat_model.calls == []
+
+
 async def test_notes_call_gets_results_as_text_without_tool_blocks() -> None:
     writer = fake_client(
         ai(tool_calls=[_call("fetch_url", {"url": SOURCE}, "1")]), ai("done"), FINDINGS
@@ -254,3 +271,26 @@ async def test_llm_error_on_first_call_has_no_usage() -> None:
         )
 
     assert info.value.usage is None
+
+
+async def test_gather_context_warns_about_each_truncated_term_list() -> None:
+    writer = fake_client(ai("done"), FINDINGS)
+    gateway = FakeGateway(truncated_categories=True, truncated_tags=True)
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=gateway)
+    )
+
+    assert len(update["warnings"]) == 2
+    assert "category list was cut at WP_MAX_TERM_PAGES" in update["warnings"][0]
+    assert "tag list was cut at WP_MAX_TERM_PAGES" in update["warnings"][1]
+
+
+async def test_gather_context_has_no_warnings_when_term_lists_are_complete() -> None:
+    writer = fake_client(ai("done"), FINDINGS)
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+    )
+
+    assert update["warnings"] == []
