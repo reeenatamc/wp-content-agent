@@ -56,7 +56,7 @@ connection errors, timeouts, 429 and 5xx, with exponential backoff (`WP_BACKOFF_
 `WP_MAX_RETRIES` times) and a `Retry-After` header honored up to `WP_MAX_RETRY_AFTER_S`.
 POST requests, which create posts and tags, are retried only when the request was never
 sent or got a 429. A POST that timed out may already have created the post, so the server
-does not resend it. Before creating a draft it looks for one with the same slug and title
+does not resend it. Before creating a draft it looks for one with the same slug, title and content
 (a GET, retried like the others), so repeating the call returns the existing draft instead
 of a second one. `create_tag` is already idempotent: WordPress answers `term_exists` and the
 server returns that tag.

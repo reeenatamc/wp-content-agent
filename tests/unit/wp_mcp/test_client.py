@@ -617,12 +617,13 @@ def test_draft_input_rejects_blank_title_but_keeps_content_whitespace() -> None:
     assert draft.content_html == "<pre>x\n</pre>\n"
 
 
-def _existing(post_id: int, title: str) -> dict[str, object]:
+def _existing(post_id: int, title: str, content: str = "<p>x</p>") -> dict[str, object]:
     return {
         "id": post_id,
         "status": "draft",
         "link": f"http://wp.test/?p={post_id}",
         "title": {"raw": title, "rendered": title},
+        "content": {"raw": content, "rendered": content},
     }
 
 
@@ -638,7 +639,12 @@ async def test_create_returns_the_existing_draft_with_same_slug_and_title(
     created = await make_client(handler).create_draft_post(_draft(slug="t"))
 
     assert [r.method for r in seen] == ["GET"]
-    assert dict(seen[0].url.params) == {"slug": "t", "status": "draft", "context": "edit"}
+    assert dict(seen[0].url.params) == {
+        "slug": "t",
+        "status": "draft",
+        "context": "edit",
+        "per_page": "100",
+    }
     assert seen[0].headers["Authorization"].startswith("Basic ")
     assert created.id == 5
     assert created.reused is True
@@ -672,6 +678,23 @@ async def test_create_posts_when_the_title_differs(
         methods.append(request.method)
         if request.method == "GET":
             return httpx.Response(200, json=[_existing(5, "Other title")])
+        return httpx.Response(201, json={"id": 9, "status": "draft", "link": "l"})
+
+    created = await make_client(handler).create_draft_post(_draft(slug="t"))
+
+    assert methods == ["GET", "POST"]
+    assert (created.id, created.reused) == (9, False)
+
+
+async def test_create_posts_when_the_content_differs(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[_existing(5, "T", "<p>an older run</p>")])
         return httpx.Response(201, json={"id": 9, "status": "draft", "link": "l"})
 
     created = await make_client(handler).create_draft_post(_draft(slug="t"))

@@ -84,7 +84,7 @@ revisions used. With none left, a revise decision raises `AgentError`; the runne
 
 `publish_draft` converts the HTML to Gutenberg block markup, creates the tags that do not
 exist yet, and calls `create_draft_post`. If the server reused an existing draft with the
-same slug and title, the run gets a warning. If WordPress
+same slug, title and content, the run gets a warning. If WordPress
 answers with any status other than `draft`, the run is marked failed and the post id is
 kept so the post can be found.
 
@@ -120,7 +120,7 @@ raised in `failed_node`, and the snapshot reports `can_retry` when that node is
 `status: publishing` as the approval node and drives the graph again, so only
 `publish_draft` runs, with the approved draft from the checkpoint and no model calls.
 If the failed request timed out, WordPress may have created the post anyway; the retry
-finds the draft with the same slug and title and reuses it instead of creating a second
+finds the draft with the same slug, title and content and reuses it instead of creating a second
 one, and the run gets a warning.
 
 Model calls have a timeout and retries from the provider SDK (`LLM_TIMEOUT_S`,
