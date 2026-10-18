@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 from pydantic import ValidationError
 
@@ -20,7 +20,16 @@ from wp_content_agent.runner import AgentRunner
 from wp_content_agent.schemas import ApprovalDecision, ApprovalRequest, RunSnapshot, RunStatus
 from wp_content_agent.settings import Settings
 
-OpenRunner = Callable[[Settings], AbstractAsyncContextManager[AgentRunner]]
+
+class OpenRunner(Protocol):
+    """AgentRunner.open, or a stand-in in tests. models=False is for commands that never
+    call a model, so they work without an API key."""
+
+    def __call__(
+        self, settings: Settings, *, models: bool = True
+    ) -> AbstractAsyncContextManager[AgentRunner]: ...
+
+
 # Reads one line of input, like input(). Commands get None when there is no terminal.
 Ask = Callable[[str], str]
 
@@ -174,7 +183,7 @@ async def _status(
     ask: Ask | None,
     out: TextIO,
 ) -> RunSnapshot:
-    async with open_runner(settings) as runner:
+    async with open_runner(settings, models=False) as runner:
         snapshot = await runner.get(args.run_id)
     if snapshot.approval is not None:
         _show_approval(snapshot.approval, out)
@@ -190,7 +199,7 @@ async def _decide(
     out: TextIO,
 ) -> RunSnapshot:
     decision = ApprovalDecision(approved=args.approved, note=args.note)
-    async with open_runner(settings) as runner:
+    async with open_runner(settings, models=False) as runner:
         snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
     _summary(snapshot, out)
     return snapshot

@@ -4,6 +4,7 @@ from langchain_openai import ChatOpenAI
 
 from wp_content_agent.errors import LLMError
 from wp_content_agent.llm import build_model_client
+from wp_content_agent.schemas import Draft
 from wp_content_agent.settings import Settings
 
 
@@ -37,6 +38,29 @@ def test_missing_api_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(LLMError, match="ANTHROPIC_API_KEY"):
         build_model_client(settings, "writer")
+
+
+async def test_optional_model_without_key_fails_only_when_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
+    client = build_model_client(settings, "writer", required=False)
+
+    with pytest.raises(LLMError, match="write: ANTHROPIC_API_KEY is not set"):
+        await client.chat([], node="write")
+    with pytest.raises(LLMError, match="review: ANTHROPIC_API_KEY is not set"):
+        await client.structured(Draft, [], node="review")
+    with pytest.raises(LLMError, match="ANTHROPIC_API_KEY is not set"):
+        _ = client.chat_model
+
+
+def test_optional_model_with_key_is_a_real_client() -> None:
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test")
+
+    client = build_model_client(settings, "writer", required=False)
+
+    assert isinstance(client.chat_model, ChatAnthropic)
 
 
 def test_missing_openai_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) -> None:
