@@ -41,7 +41,9 @@ def _default_prices() -> dict[str, ModelPrice]:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # .env.example ships lines such as `ANTHROPIC_API_KEY=`. An empty value means unset,
+    # so it falls back to the default instead of becoming an empty key or token.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     llm_provider: LLMProvider = "anthropic"
     writer_model: str | None = None

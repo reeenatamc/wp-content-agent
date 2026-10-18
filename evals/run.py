@@ -165,7 +165,10 @@ def main() -> None:
             raw = [asdict(r) for r in results]
             args.out.with_suffix(".json").write_text(json.dumps(raw, indent=2) + "\n")
 
-        asyncio.run(run_all(briefs, settings, args.timeout, write))
+        try:
+            asyncio.run(run_all(briefs, settings, args.timeout, write))
+        except AgentError as exc:  # setup problems such as a missing API key
+            sys.exit(f"error: {exc}")
     print(f"wrote {args.out}")
 
 

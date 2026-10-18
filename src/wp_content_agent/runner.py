@@ -7,7 +7,9 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
+import aiosqlite
 import httpx
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command, StateSnapshot
 
@@ -19,6 +21,7 @@ from wp_content_agent.errors import (
     RunStoppedError,
 )
 from wp_content_agent.graph import AgentContext, build_graph
+from wp_content_agent.graph.state import checkpoint_types
 from wp_content_agent.llm import build_model_client
 from wp_content_agent.nodes import NODES
 from wp_content_agent.schemas import (
@@ -35,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 # Called after each node finishes, with the node name and the state update it returned.
 ProgressCallback = Callable[[str, Mapping[str, Any]], None]
+
+
+def checkpoint_serializer() -> JsonPlusSerializer:
+    """A serializer that loads the state's own models back from checkpoints.
+
+    LangGraph warns on unregistered types today and will refuse them later, which
+    would make every waiting run impossible to resume.
+    """
+    return JsonPlusSerializer(allowed_msgpack_modules=checkpoint_types())
 
 
 class AgentRunner:
@@ -55,9 +67,8 @@ class AgentRunner:
         reviewer = build_model_client(settings, "reviewer")
         settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
         async with AsyncExitStack() as stack:
-            saver = await stack.enter_async_context(
-                AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db))
-            )
+            conn = await stack.enter_async_context(aiosqlite.connect(str(settings.checkpoint_db)))
+            saver = AsyncSqliteSaver(conn, serde=checkpoint_serializer())
             wordpress = await stack.enter_async_context(connect_wordpress(settings))
             http = await stack.enter_async_context(
                 httpx.AsyncClient(timeout=settings.fetch_timeout_s)

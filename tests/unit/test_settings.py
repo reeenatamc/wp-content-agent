@@ -34,3 +34,12 @@ def test_model_prices_can_be_overridden_from_env(monkeypatch: pytest.MonkeyPatch
     settings = Settings(_env_file=None)
 
     assert settings.model_prices["my-model"].output == 2
+
+
+@pytest.mark.parametrize("name", ["API_TOKEN", "WEBHOOK_SECRET", "OPENAI_API_KEY"])
+def test_empty_secrets_are_unset(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv(name, "")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert getattr(settings, name.lower()) is None

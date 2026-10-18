@@ -1,4 +1,16 @@
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter
+
+_HTTP_URL = TypeAdapter(HttpUrl)
+
+
+def _http_url(value: str) -> str:
+    # Validated as a URL but kept as str: the checkpointer cannot serialize HttpUrl.
+    return str(_HTTP_URL.validate_python(value))
+
+
+HttpUrlStr = Annotated[str, AfterValidator(_http_url)]
 
 
 class Brief(BaseModel):
@@ -11,4 +23,4 @@ class Brief(BaseModel):
     tone: str = Field(default="practical", max_length=60)
     target_words: int = Field(default=900, ge=300, le=3000)
     keywords: list[str] = Field(default_factory=list, max_length=10)
-    source_urls: list[HttpUrl] = Field(default_factory=list, max_length=5)
+    source_urls: list[HttpUrlStr] = Field(default_factory=list, max_length=5)

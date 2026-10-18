@@ -5,7 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class WPSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="WP_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="WP_", env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     base_url: str = "http://localhost:8080"
     username: str = Field(min_length=1)
