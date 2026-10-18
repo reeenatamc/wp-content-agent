@@ -16,22 +16,20 @@ need a model.
 ## How it works
 
 ```mermaid
-flowchart LR
-    brief([brief]) --> plan
-    plan --> gather_context
-    gather_context --> write
-    write --> review
-    review -- "failed, revisions < 2" --> write
-    review -- "passed, or out of revisions" --> human_approval
-    human_approval -- approved --> publish_draft
-    human_approval -- "revise with a note" --> write
-    human_approval -- rejected --> done([end])
+flowchart TD
+    brief([brief]) --> plan --> gather_context --> write --> review
+    review -- "fails, under limit" --> write
+    review -- "passes, or limit hit" --> human_approval
+    human_approval -- revise --> write
+    human_approval -- approve --> publish_draft
+    human_approval -- reject --> done([end])
     publish_draft --> done
-
-    gather_context <-. "list_posts, get_post,<br/>list_categories, list_tags" .-> mcp[(wp_mcp)]
-    publish_draft -. "create_tag,<br/>create_draft_post" .-> mcp
-    mcp <--> wp[(WordPress REST API)]
 ```
+
+`review` sends a failing draft back to `write` up to `MAX_REVISIONS` times (2 by default),
+then hands it to a person either way. A revise from the person goes through `write` and
+`review` again before it comes back. `gather_context` reads the site and `publish_draft`
+creates the draft, both through the `wp_mcp` server, which calls the WordPress REST API.
 
 | Node | What it does |
 |---|---|
