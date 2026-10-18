@@ -257,6 +257,20 @@ async def test_publish_failure_can_be_retried() -> None:
     assert snapshot.can_retry is False
 
 
+async def test_retry_that_died_before_publishing_can_be_retried_again() -> None:
+    runner, _ = await _failed_at_publish()
+    # What retry writes before publish_draft runs, as if the process died right after.
+    await runner._graph.aupdate_state(
+        _config("r1"), {"status": RunStatus.PUBLISHING, "error": ""}, as_node="human_approval"
+    )
+
+    stuck = await runner.get("r1")
+    snapshot = await runner.retry("r1")
+
+    assert (stuck.status, stuck.can_retry) == (RunStatus.PUBLISHING, True)
+    assert snapshot.status == RunStatus.DRAFT_CREATED
+
+
 async def test_retry_runs_only_publish_and_spends_no_model_tokens() -> None:
     runner, failed = await _failed_at_publish()
     progress: list[str] = []

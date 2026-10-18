@@ -270,11 +270,34 @@ async def test_retry_while_running_is_409() -> None:
         run_id = await _failed_publish(client, app)
         first = await client.post(f"/runs/{run_id}/retry")
         second = await client.post(f"/runs/{run_id}/retry")
+        during = (await client.get(f"/runs/{run_id}")).json()
         gate.set()
         await _service(app).wait(run_id)
 
     assert (first.status_code, second.status_code) == (202, 409)
     assert "still running" in second.json()["detail"]
+    assert (during["status"], during["can_retry"]) == ("publishing", False)
+
+
+async def test_retry_when_all_run_slots_are_busy_is_429() -> None:
+    gate = asyncio.Event()
+    blocking = False
+
+    async def plan(state: AgentState) -> dict[str, Any]:
+        if blocking:
+            await gate.wait()
+        return {}
+
+    app = _app(fake_runner(plan=plan, publish_draft=flaky_publish()), max_concurrent_runs=1)
+    async with _client(app) as client:
+        failed_id = await _failed_publish(client, app)
+        blocking = True
+        busy = await client.post("/runs", json=BRIEF)
+        response = await client.post(f"/runs/{failed_id}/retry")
+        gate.set()
+        await _service(app).wait(busy.json()["run_id"])
+
+    assert response.status_code == 429
 
 
 async def test_retry_requires_the_api_token() -> None:

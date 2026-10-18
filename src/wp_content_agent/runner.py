@@ -36,6 +36,9 @@ from wp_content_agent.tools.mcp_gateway import connect_wordpress
 
 logger = logging.getLogger(__name__)
 
+# PUBLISHING too: a retry that died before publish_draft finished can be retried again.
+_RETRYABLE = {RunStatus.FAILED, RunStatus.PUBLISHING}
+
 # Called after each node finishes, with the node name and the state update it returned.
 ProgressCallback = Callable[[str, Mapping[str, Any]], None]
 
@@ -117,16 +120,14 @@ class AgentRunner:
     ) -> RunSnapshot:
         """Run publish_draft again for a run that failed there, with the approved draft."""
         async with self._lock(run_id):
-            if not _snapshot(run_id, await self._state(run_id)).can_retry:
-                raise RunStateError(
-                    f"run {run_id} cannot be retried; only a run that failed while creating"
-                    " the draft can"
-                )
+            ensure_can_retry(_snapshot(run_id, await self._state(run_id)))
             logger.info("retrying publish for run %s", run_id)
             # Written as the approval node, so the graph routes on to publish_draft.
+            # failed_node stays set: if the process dies before publish_draft finishes,
+            # the run is still retryable instead of stuck at publishing.
             await self._graph.aupdate_state(
                 _config(run_id),
-                {"status": RunStatus.PUBLISHING, "error": "", "failed_node": ""},
+                {"status": RunStatus.PUBLISHING, "error": ""},
                 as_node="human_approval",
             )
             return await self._drive(None, run_id, on_progress)
@@ -194,6 +195,15 @@ class AgentRunner:
             logger.exception("could not mark run %s as failed", run_id)
 
 
+def ensure_can_retry(snapshot: RunSnapshot) -> None:
+    """Raise RunStateError unless the run failed inside publish_draft. Nothing has run yet."""
+    if not snapshot.can_retry:
+        raise RunStateError(
+            f"run {snapshot.run_id} cannot be retried; only a run that failed while"
+            " creating the draft can"
+        )
+
+
 def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
     if not state.values:
         raise RunNotFoundError(f"no run with id {run_id}")
@@ -205,7 +215,7 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
         approval = ApprovalRequest.model_validate(interrupts[0].value)
     review = values.get("review")
     can_retry = (
-        status == RunStatus.FAILED
+        status in _RETRYABLE
         and values.get("failed_node") == "publish_draft"
         and not values.get("wp_post_id")
     )

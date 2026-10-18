@@ -307,7 +307,11 @@ def _summary(snapshot: RunSnapshot, out: TextIO) -> None:
     if snapshot.error:
         lines.append(f"error:  {snapshot.error}")
     if snapshot.can_retry:
-        lines.append(f"retry:  wpagent retry {snapshot.run_id}")
+        # A request that timed out may still have created the post on the site.
+        lines.append(
+            f"retry:  wpagent retry {snapshot.run_id}"
+            " (check WordPress for the draft first; a timeout may have created it)"
+        )
     lines.extend(f"warning: {warning}" for warning in snapshot.warnings)
     lines.append(f"usage:  {snapshot.total_tokens:,} tokens, ${snapshot.total_cost_usd:.4f}")
     print("\n".join(lines), file=out)
