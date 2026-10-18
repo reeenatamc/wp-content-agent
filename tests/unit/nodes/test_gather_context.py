@@ -62,7 +62,8 @@ async def test_gather_context_runs_tools_and_merges_terms() -> None:
     assert [t.name for t in notes.tags] == ["django"]
     assert update["status"] == RunStatus.WRITING
     assert ("list_posts", {"search": "django"}) in gateway.calls
-    assert [u.node for u in update["usage"]] == ["gather_context", "gather_context"]
+    assert [u.node for u in update["usage"]] == ["gather_context"]
+    assert update["usage"][0].input_tokens == 30
 
 
 async def test_gather_context_feeds_fetched_text_back_to_the_model() -> None:
@@ -130,3 +131,97 @@ async def test_gather_context_propagates_llm_errors() -> None:
         await gather_context(
             {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
         )
+
+
+async def test_notes_call_gets_results_as_text_without_tool_blocks() -> None:
+    writer = fake_client(
+        ai(tool_calls=[_call("fetch_url", {"url": SOURCE}, "1")]), ai("done"), FINDINGS
+    )
+
+    await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE},
+        runtime(writer=writer, wordpress=FakeGateway(), http=_http()),
+    )
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    notes_call = writer.chat_model.calls[-1]
+    assert not any(isinstance(m, ToolMessage) for m in notes_call)
+    assert '<tool_result name="fetch_url"' in str(notes_call[-1].content)
+
+
+async def test_source_that_failed_to_fetch_is_dropped() -> None:
+    def failing(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="gone")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(failing))
+    writer = fake_client(
+        ai(tool_calls=[_call("fetch_url", {"url": SOURCE}, "1")]), ai("done"), FINDINGS
+    )
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE},
+        runtime(writer=writer, wordpress=FakeGateway(), http=http),
+    )
+
+    assert update["context"].sources == []
+
+
+async def test_facts_with_numbers_missing_from_the_page_are_dropped() -> None:
+    facts = ["Per-view caching cut load by 40%.", "Redis is 75% faster.", "Caching helps."]
+    findings = ResearchFindings(sources=[SourceNote(url=SOURCE, title="Guide", facts=facts)])
+    writer = fake_client(
+        ai(tool_calls=[_call("fetch_url", {"url": SOURCE}, "1")]), ai("done"), findings
+    )
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE},
+        runtime(writer=writer, wordpress=FakeGateway(), http=_http()),
+    )
+
+    assert update["context"].sources[0].facts == [facts[0], facts[2]]
+
+
+async def test_related_posts_take_id_title_and_link_from_wordpress() -> None:
+    wrong = ResearchFindings(
+        related_posts=[RelatedPost(id=3, title="Made up", link="https://wp.test/caching-advanced")]
+    )
+    writer = fake_client(
+        ai(tool_calls=[_call("list_posts", {"search": "django"}, "1")]), ai("done"), wrong
+    )
+
+    update = await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+    )
+
+    assert update["context"].related_posts == [
+        RelatedPost(id=3, title="Django caching basics", link="https://wp.test/caching")
+    ]
+
+
+async def test_local_tool_error_is_returned_to_the_model_as_text() -> None:
+    writer = fake_client(
+        ai(tool_calls=[_call("fetch_url", {}, "1")]), ai("done"), ResearchFindings()
+    )
+
+    await gather_context(
+        {"brief": BRIEF, "outline": OUTLINE},
+        runtime(writer=writer, wordpress=FakeGateway(), http=_http()),
+    )
+
+    assert isinstance(writer.chat_model, FakeChatModel)
+    tool_message = next(m for m in writer.chat_model.calls[1] if isinstance(m, ToolMessage))
+    assert str(tool_message.content).startswith("error: fetch_url failed")
+
+
+async def test_llm_error_on_notes_carries_loop_usage() -> None:
+    writer = fake_client(
+        ai(tool_calls=[_call("list_posts", {"search": "x"}, "1")]), ai("done"), ai("bad")
+    )
+
+    with pytest.raises(LLMError) as info:
+        await gather_context(
+            {"brief": BRIEF, "outline": OUTLINE}, runtime(writer=writer, wordpress=FakeGateway())
+        )
+
+    assert info.value.usage is not None
+    assert info.value.usage.input_tokens == 30

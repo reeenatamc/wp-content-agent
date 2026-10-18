@@ -81,3 +81,16 @@ def usage_from_messages(
         usage.cost_usd,
     )
     return usage
+
+
+def merge_usage(first: NodeUsage, second: NodeUsage) -> NodeUsage:
+    """Sum two entries for the same node and model, such as a tool loop and its final call."""
+    return first.model_copy(
+        update={
+            "input_tokens": first.input_tokens + second.input_tokens,
+            "output_tokens": first.output_tokens + second.output_tokens,
+            "cache_read_tokens": first.cache_read_tokens + second.cache_read_tokens,
+            "cache_write_tokens": first.cache_write_tokens + second.cache_write_tokens,
+            "cost_usd": first.cost_usd + second.cost_usd,
+        }
+    )
