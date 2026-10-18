@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Self
 
 import httpx
@@ -51,16 +53,31 @@ class WordPressClient:
         return [PostSummary.model_validate(item) for item in data]
 
     async def list_categories(self) -> list[Term]:
-        params = {"per_page": 100, "_fields": "id,name,slug"}
-        data = await self._request("GET", "/categories", params=params)
-        return [Term.model_validate(item) for item in data]
+        return await self._list_terms("/categories", {})
 
     async def list_tags(self, search: str = "") -> list[Term]:
-        params: dict[str, Any] = {"per_page": 100, "_fields": "id,name,slug"}
-        if search:
-            params["search"] = search
-        data = await self._request("GET", "/tags", params=params)
-        return [Term.model_validate(item) for item in data]
+        return await self._list_terms("/tags", {"search": search} if search else {})
+
+    async def _list_terms(self, path: str, params: dict[str, Any]) -> list[Term]:
+        """Read every page of a taxonomy, following X-WP-TotalPages."""
+        terms: list[Term] = []
+        pages = 1
+        page = 1
+        while page <= pages:
+            query = {**params, "per_page": 100, "page": page, "_fields": "id,name,slug"}
+            response = await self._send("GET", path, params=query)
+            terms.extend(Term.model_validate(item) for item in _json_body(response, path))
+            pages = _total_pages(response)
+            if page >= self._settings.max_term_pages and pages > page:
+                logger.warning(
+                    "%s has %d pages; read only the first %d (WP_MAX_TERM_PAGES)",
+                    path,
+                    pages,
+                    page,
+                )
+                break
+            page += 1
+        return terms
 
     async def create_tag(self, name: str) -> Term:
         try:
@@ -118,15 +135,21 @@ class WordPressClient:
             raise _invalid_response(exc) from exc
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        return _json_body(await self._send(method, path, **kwargs), path)
+
+    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         # A POST that timed out or got a 5xx may still have created the post or tag,
         # so retrying it could create duplicates.
         idempotent = method != "POST"
         attempts = self._settings.max_retries + 1
         last: WordPressError | None = None
         cause: httpx.TransportError | None = None
+        retry_after: float | None = None
         for attempt in range(attempts):
             if attempt:
-                await asyncio.sleep(self._settings.backoff_s * 2 ** (attempt - 1))
+                backoff = self._settings.backoff_s * 2 ** (attempt - 1)
+                await asyncio.sleep(backoff if retry_after is None else retry_after)
+            retry_after = None
             try:
                 response = await self._http.request(method, path, **kwargs)
             except httpx.TransportError as exc:
@@ -140,20 +163,14 @@ class WordPressClient:
             else:
                 cause = None
                 if response.is_success:
-                    try:
-                        return response.json()
-                    except ValueError as exc:
-                        raise WordPressError(
-                            f"WordPress returned a non-JSON body: {path}",
-                            status_code=response.status_code,
-                            code="invalid_response",
-                        ) from exc
+                    return response
                 last = WordPressError.from_payload(response.status_code, _json_or_none(response))
                 retryable = response.status_code in _TRANSIENT_STATUS and (
                     idempotent or response.status_code == 429
                 )
                 if not retryable:
                     raise last
+                retry_after = _retry_after(response, self._settings.max_retry_after_s)
             logger.warning(
                 "transient failure on %s %s (attempt %d/%d): %s",
                 method,
@@ -164,6 +181,42 @@ class WordPressClient:
             )
         assert last is not None
         raise last from cause
+
+
+def _json_body(response: httpx.Response, path: str) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise WordPressError(
+            f"WordPress returned a non-JSON body: {path}",
+            status_code=response.status_code,
+            code="invalid_response",
+        ) from exc
+
+
+def _total_pages(response: httpx.Response) -> int:
+    try:
+        return max(1, int(response.headers.get("X-WP-TotalPages", "1")))
+    except ValueError:
+        return 1
+
+
+def _retry_after(response: httpx.Response, cap: float) -> float | None:
+    """Seconds from a Retry-After header (delta or HTTP date), capped; None if absent."""
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    return min(max(seconds, 0.0), cap)
 
 
 def _json_or_none(response: httpx.Response) -> Any:

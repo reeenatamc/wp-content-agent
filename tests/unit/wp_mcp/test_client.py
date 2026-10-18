@@ -385,3 +385,122 @@ async def test_meta_description_saved_is_false_when_not_sent(
     created = await make_client(handler).create_draft_post(_draft())
 
     assert created.meta_description_saved is False
+
+
+async def test_terms_follow_total_pages_header(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params["page"]
+        pages.append(page)
+        term = {"id": int(page), "name": f"T{page}", "slug": f"t{page}"}
+        return httpx.Response(200, json=[term], headers={"X-WP-TotalPages": "3"})
+
+    tags = await make_client(handler).list_tags()
+
+    assert pages == ["1", "2", "3"]
+    assert [tag.id for tag in tags] == [1, 2, 3]
+
+
+async def test_terms_stop_at_max_pages_with_warning(
+    settings: WPSettings, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=[], headers={"X-WP-TotalPages": "50"})
+
+    http = httpx.AsyncClient(base_url="http://wp.test", transport=httpx.MockTransport(handler))
+    client = WordPressClient(http, settings.model_copy(update={"max_term_pages": 2}))
+
+    with caplog.at_level("WARNING"):
+        await client.list_categories()
+
+    assert calls == 2
+    assert "WP_MAX_TERM_PAGES" in caplog.text
+
+
+async def test_terms_without_total_pages_header_read_one_page(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=[{"id": 1, "name": "News", "slug": "news"}])
+
+    await make_client(handler).list_categories()
+
+    assert calls == 1
+
+
+def _rate_limited(retry_after: str) -> Handler:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": retry_after})
+        return httpx.Response(200, json=[])
+
+    return handler
+
+
+async def test_retry_after_seconds_is_used_and_capped(
+    settings: WPSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("wp_mcp.client.asyncio.sleep", fake_sleep)
+    capped = settings.model_copy(update={"max_retry_after_s": 5})
+    for value, client_settings in (("2", settings), ("120", capped)):
+        http = httpx.AsyncClient(
+            base_url="http://wp.test", transport=httpx.MockTransport(_rate_limited(value))
+        )
+        await WordPressClient(http, client_settings).list_tags()
+
+    assert sleeps == [2.0, 5.0]
+
+
+async def test_retry_after_http_date_in_the_past_retries_now(
+    settings: WPSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("wp_mcp.client.asyncio.sleep", fake_sleep)
+    handler = _rate_limited("Wed, 21 Oct 2015 07:28:00 GMT")
+    http = httpx.AsyncClient(base_url="http://wp.test", transport=httpx.MockTransport(handler))
+
+    await WordPressClient(http, settings).list_tags()
+
+    assert sleeps == [0.0]
+
+
+async def test_invalid_retry_after_falls_back_to_backoff(
+    settings: WPSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("wp_mcp.client.asyncio.sleep", fake_sleep)
+    http = httpx.AsyncClient(
+        base_url="http://wp.test", transport=httpx.MockTransport(_rate_limited("soon"))
+    )
+
+    await WordPressClient(http, settings.model_copy(update={"backoff_s": 0.25})).list_tags()
+
+    assert sleeps == [0.25]
