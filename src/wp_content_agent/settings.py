@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     llm_timeout_s: float = Field(default=120.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)
+    llm_max_tokens: int = Field(default=16_000, ge=1024)
     model_prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
 
     max_revisions: int = Field(default=2, ge=0)
