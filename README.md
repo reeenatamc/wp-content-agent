@@ -158,7 +158,8 @@ behavior.
   database. A run can wait for days and be resumed from the CLI or the API, and a crashed
   run is marked failed instead of staying half done.
 - The MCP server has no publish or delete tool, so "drafts only" does not depend on the
-  model behaving. `publish_draft` also checks the status WordPress returns.
+  model behaving. `publish_draft` also checks the status WordPress returns, and a person
+  approves every draft before it is created and publishes it from WordPress.
 - Prompt caching marks every system prompt, plus the brief and notes in `write` and
   `review`, which run again on every revision. The eval table reports how much of the
   input came from cache.
@@ -171,7 +172,8 @@ behavior.
   deployment simple; several workers on the same file are not supported.
 
 [docs/architecture.md](docs/architecture.md) goes deeper into the state, the error
-handling, the API and the edge cases.
+handling and the API; its [Failures](docs/architecture.md#failures) section covers the
+edge cases around retries and timeouts.
 
 ## Evals
 
