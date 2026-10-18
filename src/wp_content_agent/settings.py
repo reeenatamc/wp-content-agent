@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     mcp_command: str = Field(default=sys.executable)
     mcp_args: list[str] = Field(default_factory=lambda: ["-m", "wp_mcp.server"])
+    mcp_call_timeout_s: float = Field(default=60.0, gt=0)
 
     checkpoint_db: Path = Path("wpagent.sqlite")
     webhook_secret: SecretStr | None = None

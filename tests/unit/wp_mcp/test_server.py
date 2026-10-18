@@ -7,40 +7,8 @@ from mcp.client.session import ClientSession
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from wp_mcp.client import WordPressClient
-from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, PostSummary, Term
+from tests.fakes import FakeWordPressClient as FakeClient
 from wp_mcp.server import build_server
-from wp_mcp.settings import WPSettings
-
-
-class FakeClient(WordPressClient):
-    def __init__(self, http: httpx.AsyncClient) -> None:
-        settings = WPSettings(
-            base_url="http://wp.test",
-            username="agent",
-            app_password="x",  # type: ignore[arg-type]
-        )
-        super().__init__(http, settings)
-        self.drafts: list[CreateDraftInput] = []
-
-    async def list_posts(self, search: str = "", per_page: int = 10) -> list[PostSummary]:
-        return [PostSummary(id=1, title=f"{search}:{per_page}", link="l", status="draft")]
-
-    async def create_tag(self, name: str) -> Term:
-        if name == "boom":
-            raise WordPressError("denied", status_code=401, code="rest_cannot_create")
-        return Term(id=5, name=name, slug=name.lower())
-
-    async def create_draft_post(self, draft: CreateDraftInput) -> DraftCreated:
-        self.drafts.append(draft)
-        return DraftCreated(
-            id=8,
-            status="draft",
-            link="l",
-            edit_url=self.edit_url(8),
-            meta_description_saved=False,
-        )
 
 
 @pytest.fixture
