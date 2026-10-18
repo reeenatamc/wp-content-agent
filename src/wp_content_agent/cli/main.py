@@ -92,6 +92,10 @@ def _parser() -> argparse.ArgumentParser:
     retry.add_argument("run_id")
     retry.set_defaults(command=_retry)
 
+    revise = commands.add_parser("revise", help="send a waiting draft back to the writer")
+    revise.add_argument("run_id")
+    revise.add_argument("--note", required=True, help="what the writer should change")
+    revise.set_defaults(command=_revise)
     serve = commands.add_parser("serve", help="start the HTTP API")
     serve.add_argument("--host", help="defaults to API_HOST")
     serve.add_argument("--port", type=int, help="defaults to API_PORT")
@@ -147,12 +151,14 @@ async def _run(
     async with open_runner(settings) as runner:
         snapshot = await runner.start(brief, run_id=args.run_id, on_progress=progress)
         print(f"run id: {snapshot.run_id}", file=out)
-        if snapshot.approval is not None:
+        # A revision sends the run back to the writer and it stops at approval again.
+        while snapshot.approval is not None:
             decision = _decision(snapshot.approval, args.yes, ask, out)
             if decision is None:
                 print(
                     f"waiting for approval: wpagent approve {snapshot.run_id}"
-                    f" (or wpagent reject {snapshot.run_id})",
+                    f" (or wpagent reject {snapshot.run_id}, wpagent revise {snapshot.run_id}"
+                    " --note TEXT)",
                     file=out,
                 )
                 return snapshot
@@ -184,6 +190,23 @@ async def _decide(
     out: TextIO,
 ) -> RunSnapshot:
     decision = ApprovalDecision(approved=args.approved, note=args.note)
+    async with open_runner(settings) as runner:
+        snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
+    _summary(snapshot, out)
+    return snapshot
+
+
+async def _revise(
+    args: argparse.Namespace,
+    settings: Settings,
+    open_runner: OpenRunner,
+    ask: Ask | None,
+    out: TextIO,
+) -> RunSnapshot:
+    try:
+        decision = ApprovalDecision(approved=False, note=args.note, revise=True)
+    except ValidationError as exc:
+        raise AgentError("the note must say what to change") from exc
     async with open_runner(settings) as runner:
         snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
     _summary(snapshot, out)
@@ -225,18 +248,26 @@ def _decision(
 
 def _ask_decision(request: ApprovalRequest, ask: Ask, out: TextIO) -> ApprovalDecision | None:
     while True:
-        answer = ask("create the draft? [a]pprove, [r]eject, [v]iew HTML, [l]ater: ").strip()
+        answer = ask(
+            "create the draft? [a]pprove, [r]eject, [c]hange, [v]iew HTML, [l]ater: "
+        ).strip()
         match answer.lower()[:1]:
             case "a":
                 return ApprovalDecision(approved=True, note=ask("note (optional): ").strip())
             case "r":
                 return ApprovalDecision(approved=False, note=ask("reason (optional): ").strip())
+            case "c" if request.human_revisions_left == 0:
+                print("no human revisions left; approve or reject", file=out)
+            case "c":
+                # A blank note goes back to the menu.
+                if note := ask("what should change (blank to go back): ").strip():
+                    return ApprovalDecision(approved=False, note=note, revise=True)
             case "v":
                 print(request.content_html, file=out)
             case "l":
                 return None
             case _:
-                print("answer a, r, v or l", file=out)
+                print("answer a, r, c, v or l", file=out)
 
 
 def _show_approval(request: ApprovalRequest, out: TextIO) -> None:
@@ -250,6 +281,7 @@ def _show_approval(request: ApprovalRequest, out: TextIO) -> None:
         f"tags:      {', '.join(request.tag_names) or '-'}",
         f"review:    {review} after {request.revision_count} revision(s)",
         *(f"  - {check}" for check in request.failed_checks),
+        f"changes:   {request.human_revisions_left} human revision(s) left",
         "",
         _preview(request.content_html),
         "",

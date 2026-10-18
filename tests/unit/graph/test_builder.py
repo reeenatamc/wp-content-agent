@@ -7,6 +7,7 @@ from langgraph.types import Command, interrupt
 
 from tests.fakes import fake_client
 from wp_content_agent.graph import AgentContext, AgentState, build_graph, next_revision_count
+from wp_content_agent.graph.builder import route_after_approval
 from wp_content_agent.schemas import Brief, Draft, Review, RunStatus
 from wp_content_agent.settings import Settings
 
@@ -57,6 +58,8 @@ class FakeNodes:
     def human_approval(self, state: AgentState) -> dict[str, Any]:
         self.calls["human_approval"] += 1
         decision = interrupt({"revision_count": state.get("revision_count", 0)})
+        if decision.get("revise"):
+            return {"status": RunStatus.WRITING, "human_feedback": decision["note"]}
         status = RunStatus.PUBLISHING if decision["approved"] else RunStatus.REJECTED
         return {"status": status}
 
@@ -125,6 +128,37 @@ async def test_rejection_ends_without_publishing(context: AgentContext) -> None:
     assert nodes.calls["publish_draft"] == 0
 
 
+async def test_revise_goes_back_to_write_and_review_then_approves(
+    context: AgentContext,
+) -> None:
+    nodes = FakeNodes(review_passes=[True, True])
+    graph, config = _start(nodes)
+    revise = {"approved": False, "revise": True, "note": "shorter intro"}
+
+    await graph.ainvoke(BRIEF, config, context=context)
+    paused = await graph.ainvoke(Command(resume=revise), config, context=context)
+    done = await graph.ainvoke(Command(resume={"approved": True}), config, context=context)
+
+    assert "__interrupt__" in paused
+    assert nodes.calls["write"] == 2
+    assert nodes.calls["review"] == 2
+    assert nodes.calls["human_approval"] == 4  # each resume runs the node again from the top
+    assert nodes.calls["publish_draft"] == 1
+    assert done["status"] == RunStatus.DRAFT_CREATED
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (RunStatus.WRITING, "write"),
+        (RunStatus.PUBLISHING, "publish_draft"),
+        (RunStatus.REJECTED, "__end__"),
+    ],
+)
+def test_route_after_approval(status: RunStatus, expected: str) -> None:
+    assert route_after_approval({"status": status}) == expected
+
+
 def test_build_graph_rejects_missing_nodes() -> None:
     with pytest.raises(ValueError, match="publish_draft"):
         build_graph({"plan": lambda state: {}})  # type: ignore[dict-item]
@@ -143,3 +177,11 @@ def test_next_revision_count_starts_at_zero_and_counts_rewrites() -> None:
     second = next_revision_count({"draft": DRAFT, "revision_count": 0})
 
     assert (first, second) == (0, 1)
+
+
+def test_next_revision_count_restarts_for_an_editors_note() -> None:
+    state = {"draft": DRAFT, "revision_count": 2, "human_feedback": "shorter intro"}
+
+    count = next_revision_count(state)  # type: ignore[arg-type]
+
+    assert count == 0

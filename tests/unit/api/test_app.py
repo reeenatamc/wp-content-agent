@@ -81,7 +81,7 @@ async def test_approve_creates_the_draft() -> None:
         body = (await client.get(f"/runs/{run_id}")).json()
 
     assert accepted.status_code == 202
-    assert accepted.json()["approval"] is None
+    assert (accepted.json()["status"], accepted.json()["approval"]) == ("publishing", None)
     assert body["status"] == "draft_created"
     assert body["edit_url"].endswith("post=8&action=edit")
 
@@ -350,3 +350,39 @@ async def test_shutdown_marks_running_runs_failed() -> None:
         await started.wait()
 
     assert (await runner.get(run_id)).status == "failed"
+
+
+async def test_revise_sends_the_draft_back_and_waits_for_approval_again() -> None:
+    app = _app()
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        accepted = await client.post(f"/runs/{run_id}/revise", json={"note": "shorter intro"})
+        await _service(app).wait(run_id)
+        body = (await client.get(f"/runs/{run_id}")).json()
+
+    assert (accepted.status_code, accepted.json()["status"]) == (202, "writing")
+    assert body["status"] == "awaiting_approval"
+    assert body["approval"]["human_revisions_left"] == 1
+
+
+@pytest.mark.parametrize("body", [{}, {"note": ""}, {"note": "   "}, {"note": "x" * 2001}])
+async def test_revise_with_a_missing_or_blank_note_is_422(body: dict[str, str]) -> None:
+    app = _app()
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        response = await client.post(f"/runs/{run_id}/revise", json=body)
+
+    assert response.status_code == 422
+
+
+async def test_revise_with_no_revisions_left_conflicts() -> None:
+    settings = Settings(_env_file=None, max_human_revisions=1)  # type: ignore[call-arg]
+    app = _app(fake_runner(settings))
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        await client.post(f"/runs/{run_id}/revise", json={"note": "one"})
+        await _service(app).wait(run_id)
+        response = await client.post(f"/runs/{run_id}/revise", json={"note": "two"})
+
+    assert response.status_code == 409
+    assert "no human revisions left" in response.json()["detail"]

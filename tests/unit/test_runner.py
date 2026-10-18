@@ -6,7 +6,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
-from wp_content_agent.graph import AgentState
+from wp_content_agent.graph import AgentState, next_revision_count
 from wp_content_agent.runner import AgentRunner, _config, checkpoint_serializer
 from wp_content_agent.schemas import (
     ApprovalDecision,
@@ -401,3 +401,45 @@ def test_checkpoint_serializer_blocks_types_outside_the_state() -> None:
     loaded = serde.loads_typed(serde.dumps_typed({"draft": DRAFT}))
 
     assert loaded != {"draft": DRAFT}
+
+
+def _revise(note: str = "shorter intro") -> ApprovalDecision:
+    return ApprovalDecision(approved=False, revise=True, note=note)
+
+
+async def test_revise_writes_again_and_stops_at_approval() -> None:
+    writes: list[str] = []
+
+    def write(state: AgentState) -> dict[str, Any]:
+        writes.append(state.get("human_feedback", ""))
+        return {"draft": DRAFT, "revision_count": next_revision_count(state)}
+
+    runner = fake_runner(write=write)
+    await runner.start(BRIEF, run_id="r1")
+
+    snapshot = await runner.resume("r1", _revise())
+
+    assert writes == ["", "shorter intro"]
+    assert snapshot.status == RunStatus.AWAITING_APPROVAL
+    assert snapshot.approval is not None
+    assert snapshot.approval.human_revisions_left == 1
+
+
+async def test_revise_with_no_revisions_left_is_refused_before_anything_runs() -> None:
+    writes = 0
+
+    def write(state: AgentState) -> dict[str, Any]:
+        nonlocal writes
+        writes += 1
+        return {"draft": DRAFT, "revision_count": next_revision_count(state)}
+
+    runner = fake_runner(write=write)
+    await runner.start(BRIEF, run_id="r1")
+    await runner.resume("r1", _revise())
+    await runner.resume("r1", _revise())
+
+    with pytest.raises(RunStateError, match="no human revisions left"):
+        await runner.resume("r1", _revise())
+
+    assert writes == 3
+    assert (await runner.get("r1")).status == RunStatus.AWAITING_APPROVAL

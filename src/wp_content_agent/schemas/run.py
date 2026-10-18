@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class RunStatus(StrEnum):
@@ -38,6 +38,8 @@ class ApprovalRequest(BaseModel):
     review_passed: bool
     failed_checks: list[str]
     revision_count: int
+    # Defaults to 0 so a request saved before revisions existed still loads.
+    human_revisions_left: int = 0
 
 
 class ApprovalDecision(BaseModel):
@@ -48,6 +50,16 @@ class ApprovalDecision(BaseModel):
 
     approved: bool
     note: str = Field(default="", max_length=2000)
+    # Send the draft back to the writer with the note as feedback instead of deciding.
+    revise: bool = False
+
+    @model_validator(mode="after")
+    def _check_revise(self) -> "ApprovalDecision":
+        if self.revise and self.approved:
+            raise ValueError("a decision cannot both approve and revise")
+        if self.revise and not self.note.strip():
+            raise ValueError("a revise decision needs a note saying what to change")
+        return self
 
 
 class RunSnapshot(BaseModel):

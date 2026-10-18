@@ -35,7 +35,7 @@ run every node with fakes.
 | `context` | `gather_context` (sources, related posts, categories, tags) |
 | `draft`, `revision_count` | `write` |
 | `review` | `review` |
-| `approval_note` | `human_approval` |
+| `approval_note`, `human_feedback`, `human_revision_count` | `human_approval` (`write` clears `human_feedback`) |
 | `wp_post_id`, `edit_url` | `publish_draft` |
 | `status`, `error` | any node |
 | `usage`, `warnings` | appended by any node (`operator.add` reducers) |
@@ -58,7 +58,12 @@ returned. Categories and tags are loaded in code, not by the model.
 
 `write` produces a `Draft`: title, slug, excerpt, meta description, semantic HTML,
 category ids and tag names. Category ids that are not among the site's categories are
-dropped. On a revision it gets the previous draft and the review's fixes.
+dropped. On a revision it gets the previous draft and the review's fixes. When
+`human_feedback` is set, it gets the previous draft and the editor's note instead, and the
+note takes precedence over review fixes for that call. `write` clears `human_feedback`, so a
+note applies once. A draft written from a note starts `revision_count` at 0 again, so the
+review loop has its full `MAX_REVISIONS` budget to fix anything the note broke. A run
+makes at most `MAX_HUMAN_REVISIONS × (MAX_REVISIONS + 1)` extra writes.
 
 `review` runs code checks first: meta description length (140 to 160 characters), allowed
 HTML tags and attributes, and numbers in the draft that do not appear in the notes. The
@@ -70,7 +75,12 @@ comes with a fix. `route_after_review` sends the draft back to `write` while it 
 `human_approval` calls `interrupt()` with an `ApprovalRequest`. The run stops, the
 checkpoint is saved, and nothing else happens until someone resumes it with an
 `ApprovalDecision`. The decision model is strict, so a string like `"yes"` is not an
-approval.
+approval. A decision can approve, reject, or revise (`revise=True`, which needs a note and
+cannot also approve). A revise sets `status` to `writing`, stores the note in
+`human_feedback`, adds one to `human_revision_count` and `route_after_approval` sends the
+run to `write`. `ApprovalRequest.human_revisions_left` is `MAX_HUMAN_REVISIONS` minus the
+revisions used. With none left, a revise decision raises `AgentError`; the runner and
+`RunService` refuse it earlier with `RunStateError`, before anything runs.
 
 `publish_draft` converts the HTML to Gutenberg block markup, creates the tags that do not
 exist yet, and calls `create_draft_post`. If WordPress
@@ -84,8 +94,9 @@ before anything else starts. It then opens the SQLite checkpointer, starts the M
 as a subprocess and opens an HTTP client. All three close together.
 
 `start` refuses a run id that already exists. `resume` refuses a run that is not waiting
-for approval. `retry` refuses a run unless it failed inside `publish_draft` without a
-post id. Each run id has an `asyncio.Lock`, so two approvals of the same run cannot
+for approval, and a revise decision when no human revisions are left. `retry` refuses a
+run unless it failed inside `publish_draft` without a post id. Each run id has an
+`asyncio.Lock`, so two approvals of the same run cannot
 create two drafts in one process.
 
 The checkpointer only loads types on an allowlist, which is derived from `AgentState`, so
@@ -133,12 +144,19 @@ when it retries.
 On shutdown the service cancels its tasks and marks any run that had not finished as
 failed with "the server stopped during the run".
 
+| Endpoint | What it does |
+|---|---|
+| `POST /runs`, `POST /webhooks/n8n` | Start a run. |
+| `GET /runs/{id}` | Read a run. |
+| `POST /runs/{id}/approve`, `/reject` | Decide, with an optional note. |
+| `POST /runs/{id}/revise` | Send the draft back to `write`. The note is required, 1 to 2000 characters. |
+
 | Error | Status |
 |---|---|
 | `RunNotFoundError` | 404 |
-| `RunStateError` (exists, not awaiting approval, busy) | 409 |
+| `RunStateError` (exists, not awaiting approval, busy, no human revisions left) | 409 |
 | `RunLimitError` | 429 |
-| invalid brief | 422 |
+| invalid brief, missing or blank revise note | 422 |
 | missing or wrong bearer token or webhook secret | 401 |
 | webhook without `WEBHOOK_SECRET` | 503 |
 

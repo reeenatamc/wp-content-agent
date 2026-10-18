@@ -81,7 +81,7 @@ def test_view_prints_html_then_asks_again(brief: Path) -> None:
     _, output = _cli(["run", "--brief", str(brief)], fake_runner(), "v", "x", "a", "")
 
     assert "<p>x</p>" in output
-    assert "answer a, r, v or l" in output
+    assert "answer a, r, c, v or l" in output
     assert "status: draft_created" in output
 
 
@@ -231,3 +231,53 @@ def test_serve_passes_host_port_and_runner(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert code == EXIT_OK
     assert (calls[0]["host"], calls[0]["port"]) == ("127.0.0.1", 0)
+
+
+def test_change_asks_again_after_the_revised_draft(brief: Path) -> None:
+    code, output = _cli(
+        ["run", "--brief", str(brief)], fake_runner(), "c", "  ", "c", "shorter intro", "a", ""
+    )
+
+    assert code == EXIT_OK
+    assert output.count("title:     Caching Django querysets") == 2
+    assert "1 human revision(s) left" in output
+    assert "status: draft_created" in output
+
+
+def test_change_is_refused_when_no_revisions_are_left(brief: Path) -> None:
+    runner = fake_runner(Settings(_env_file=None, max_human_revisions=0))  # type: ignore[call-arg]
+
+    _, output = _cli(["run", "--brief", str(brief)], runner, "c", "r", "")
+
+    assert "no human revisions left" in output
+    assert "status: rejected" in output
+
+
+def test_revise_command_sends_a_waiting_run_back_to_the_writer(brief: Path) -> None:
+    runner = fake_runner()
+    _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "l")
+
+    code, output = _cli(["revise", "r1", "--note", "shorter intro"], runner)
+
+    assert code == EXIT_OK
+    assert "status: awaiting_approval" in output
+    assert "  write" in output
+
+
+def test_revise_command_with_a_blank_note_exits_with_error(
+    brief: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = fake_runner()
+    _cli(["run", "--brief", str(brief), "--run-id", "r1"], runner, "l")
+
+    code, _ = _cli(["revise", "r1", "--note", "  "], runner)
+
+    assert code == EXIT_FAILED
+    assert "must say what to change" in capsys.readouterr().err
+
+
+def test_revise_command_requires_a_note(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        _cli(["revise", "r1"], fake_runner())
+
+    assert "--note" in capsys.readouterr().err

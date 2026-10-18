@@ -7,7 +7,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
-from wp_content_agent.runner import AgentRunner, ensure_can_retry
+from wp_content_agent.runner import AgentRunner, ensure_can_resume, ensure_can_retry
 from wp_content_agent.schemas import ApprovalDecision, Brief, RunSnapshot, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -57,13 +57,12 @@ class RunService:
         self._busy.add(run_id)
         try:
             snapshot = await self._runner.get(run_id)
-            if snapshot.approval is None:
-                raise RunStateError(f"run {run_id} is {snapshot.status}, not awaiting approval")
+            ensure_can_resume(snapshot, decision)
         except BaseException:
             self._busy.discard(run_id)
             raise
         self._spawn(run_id, self._runner.resume(run_id, decision))
-        return snapshot.model_copy(update={"approval": None})
+        return snapshot.model_copy(update={"approval": None, "status": _status_after(decision)})
 
     async def retry(self, run_id: str) -> RunSnapshot:
         if run_id in self._busy:
@@ -89,9 +88,11 @@ class RunService:
             if run_id in self._busy:
                 return RunSnapshot(run_id=run_id, status=RunStatus.PLANNING)
             raise
-        # A retry in progress is publishing with failed_node set; it is not retryable yet.
-        if run_id in self._busy:
-            return snapshot.model_copy(update={"can_retry": False})
+        if run_id in self._busy and snapshot.can_retry:
+            # A retry that has not written its first update yet, or is publishing now.
+            return snapshot.model_copy(
+                update={"status": RunStatus.PUBLISHING, "error": None, "can_retry": False}
+            )
         return snapshot
 
     async def wait(self, run_id: str) -> None:
@@ -127,3 +128,9 @@ class RunService:
             return
         if (exc := task.exception()) is not None:
             logger.error("background work for run %s raised", run_id, exc_info=exc)
+
+
+def _status_after(decision: ApprovalDecision) -> RunStatus:
+    if decision.revise:
+        return RunStatus.WRITING
+    return RunStatus.PUBLISHING if decision.approved else RunStatus.REJECTED

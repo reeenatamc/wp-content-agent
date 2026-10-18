@@ -1,7 +1,15 @@
 import pytest
 from pydantic import ValidationError
 
-from wp_content_agent.schemas import Brief, Draft, Outline, OutlineSection, Review
+from wp_content_agent.schemas import (
+    ApprovalDecision,
+    ApprovalRequest,
+    Brief,
+    Draft,
+    Outline,
+    OutlineSection,
+    Review,
+)
 from wp_content_agent.schemas.draft import slugify
 
 
@@ -80,3 +88,47 @@ def test_outline_must_start_with_h2() -> None:
 
     with pytest.raises(ValidationError, match="first section must be an H2"):
         Outline(working_title="T", angle="A", sections=sections)
+
+
+class TestApprovalDecision:
+    def test_revise_with_a_note_is_valid(self) -> None:
+        decision = ApprovalDecision(approved=False, revise=True, note="shorter intro")
+
+        assert decision.revise
+        assert decision.note == "shorter intro"
+
+    def test_revise_defaults_to_false(self) -> None:
+        assert not ApprovalDecision(approved=True).revise
+
+    @pytest.mark.parametrize("note", ["", "   \n"])
+    def test_revise_needs_a_note_with_text(self, note: str) -> None:
+        with pytest.raises(ValidationError, match="needs a note"):
+            ApprovalDecision(approved=False, revise=True, note=note)
+
+    def test_revise_cannot_also_approve(self) -> None:
+        with pytest.raises(ValidationError, match="both approve and revise"):
+            ApprovalDecision(approved=True, revise=True, note="x")
+
+    def test_revise_must_be_a_real_bool(self) -> None:
+        with pytest.raises(ValidationError):
+            ApprovalDecision.model_validate({"approved": False, "revise": "yes", "note": "x"})
+
+
+class TestApprovalRequest:
+    def test_request_saved_before_revisions_loads_with_none_left(self) -> None:
+        saved = {
+            "title": "T",
+            "slug": "t",
+            "excerpt": "E",
+            "meta_description": "M",
+            "content_html": "<p>x</p>",
+            "category_names": [],
+            "tag_names": [],
+            "review_passed": True,
+            "failed_checks": [],
+            "revision_count": 0,
+        }
+
+        request = ApprovalRequest.model_validate(saved)
+
+        assert request.human_revisions_left == 0

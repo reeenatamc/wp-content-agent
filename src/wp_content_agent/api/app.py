@@ -1,4 +1,4 @@
-"""HTTP API: start runs, read them, approve or reject, and an n8n webhook."""
+"""HTTP API: start runs, read them, approve, reject or revise, and an n8n webhook."""
 
 import secrets
 from collections.abc import AsyncIterator, Callable
@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from wp_content_agent.api.service import RunService
 from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
@@ -26,6 +26,10 @@ IdempotencyKey = Annotated[str | None, Header(alias=IDEMPOTENCY_HEADER, pattern=
 
 class DecisionNote(BaseModel):
     note: str = Field(default="", max_length=2000)
+
+
+class RevisionNote(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
 
 
 def create_app(
@@ -118,6 +122,17 @@ def create_app(
     @router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
     async def retry_run(run_id: str, runs: Service) -> RunSnapshot:
         return await runs.retry(run_id)
+
+    @router.post("/{run_id}/revise", status_code=status.HTTP_202_ACCEPTED)
+    async def revise_run(run_id: str, body: RevisionNote, runs: Service) -> RunSnapshot:
+        try:
+            decision = ApprovalDecision(approved=False, note=body.note, revise=True)
+        except ValidationError as exc:
+            # A note of only spaces passes the length check but says nothing to change.
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "note must not be blank"
+            ) from exc
+        return await runs.resume(run_id, decision)
 
     app.include_router(router)
 
