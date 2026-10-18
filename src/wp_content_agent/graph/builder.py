@@ -7,7 +7,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 
 from wp_content_agent.graph.context import AgentContext
-from wp_content_agent.graph.state import AgentState
+from wp_content_agent.graph.state import AgentState, should_revise
 from wp_content_agent.schemas import RunStatus
 
 NodeName = Literal["plan", "gather_context", "write", "review", "human_approval", "publish_draft"]
@@ -17,12 +17,9 @@ NODE_ORDER: tuple[NodeName, ...] = get_args(NodeName)
 def route_after_review(
     state: AgentState, runtime: Runtime[AgentContext]
 ) -> Literal["write", "human_approval"]:
-    review = state.get("review")
-    if review is None:
-        raise ValueError("review node finished without writing a review")
-    if review.passed or state.get("revision_count", 0) >= runtime.context.settings.max_revisions:
-        return "human_approval"
-    return "write"
+    if should_revise(state, runtime.context.settings.max_revisions):
+        return "write"
+    return "human_approval"
 
 
 def route_after_approval(state: AgentState) -> Literal["publish_draft", "__end__"]:

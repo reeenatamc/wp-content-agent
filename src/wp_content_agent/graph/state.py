@@ -32,3 +32,11 @@ def next_revision_count(state: AgentState) -> int:
     if "draft" not in state:
         return 0
     return state.get("revision_count", 0) + 1
+
+
+def should_revise(state: AgentState, max_revisions: int) -> bool:
+    """True when the latest review failed and the revision budget is not used up."""
+    review = state.get("review")
+    if review is None:
+        raise ValueError("review node finished without writing a review")
+    return not review.passed and state.get("revision_count", 0) < max_revisions
