@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from wp_content_agent.briefs import load_brief
 from wp_content_agent.errors import AgentError
-from wp_content_agent.runner import AgentRunner
+from wp_content_agent.runner import AgentRunner, ProgressCallback, TokenCallback
 from wp_content_agent.schemas import ApprovalDecision, ApprovalRequest, RunSnapshot, RunStatus
 from wp_content_agent.settings import Settings
 
@@ -158,9 +158,14 @@ async def _run(
 ) -> RunSnapshot:
     brief = load_brief(args.brief)
     print(f"brief: {brief.topic}", file=out)
-    progress = _progress(out)
+    progress, tokens, end_line = _reporters(out)
     async with open_runner(settings) as runner:
-        snapshot = await runner.start(brief, run_id=args.run_id, on_progress=progress)
+        try:
+            snapshot = await runner.start(
+                brief, run_id=args.run_id, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
         print(f"run id: {snapshot.run_id}", file=out)
         # A revision sends the run back to the writer and it stops at approval again.
         while snapshot.approval is not None:
@@ -173,7 +178,12 @@ async def _run(
                     file=out,
                 )
                 return snapshot
-            snapshot = await runner.resume(snapshot.run_id, decision, on_progress=progress)
+            try:
+                snapshot = await runner.resume(
+                    snapshot.run_id, decision, on_progress=progress, on_token=tokens
+                )
+            finally:
+                end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -202,7 +212,13 @@ async def _decide(
 ) -> RunSnapshot:
     decision = ApprovalDecision(approved=args.approved, note=args.note)
     async with open_runner(settings, models=False) as runner:
-        snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.resume(
+                args.run_id, decision, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -219,7 +235,13 @@ async def _revise(
     except ValidationError as exc:
         raise AgentError("the note must say what to change") from exc
     async with open_runner(settings) as runner:
-        snapshot = await runner.resume(args.run_id, decision, on_progress=_progress(out))
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.resume(
+                args.run_id, decision, on_progress=progress, on_token=tokens
+            )
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -232,7 +254,11 @@ async def _retry(
     out: TextIO,
 ) -> RunSnapshot:
     async with open_runner(settings) as runner:
-        snapshot = await runner.retry(args.run_id, on_progress=_progress(out))
+        progress, tokens, end_line = _reporters(out)
+        try:
+            snapshot = await runner.retry(args.run_id, on_progress=progress, on_token=tokens)
+        finally:
+            end_line()
     _summary(snapshot, out)
     return snapshot
 
@@ -306,8 +332,22 @@ def _preview(content_html: str) -> str:
     return text if len(text) <= PREVIEW_CHARS else f"{text[:PREVIEW_CHARS].rstrip()}..."
 
 
-def _progress(out: TextIO) -> Callable[[str, Mapping[str, Any]], None]:
+def _reporters(out: TextIO) -> tuple[ProgressCallback, TokenCallback, Callable[[], None]]:
+    """Progress lines and the writer's streamed text, which share the terminal.
+
+    The writer returns structured output, so the text is the draft as JSON.
+    """
+    mid_line = False
+
+    def end_line() -> None:
+        # Streamed text has no newline; whatever is printed next starts on its own line.
+        nonlocal mid_line
+        if mid_line:
+            print(file=out)
+            mid_line = False
+
     def report(node: str, update: Mapping[str, Any]) -> None:
+        end_line()
         cost = ""
         if entries := update.get("usage", []):
             tokens = sum(entry.input_tokens + entry.output_tokens for entry in entries)
@@ -317,7 +357,13 @@ def _progress(out: TextIO) -> Callable[[str, Mapping[str, Any]], None]:
                 cost += f"  cache read {cached:,}"
         print(f"  {node:<15} {_detail(node, update)}{cost}", file=out, flush=True)
 
-    return report
+    def stream(node: str, text: str) -> None:
+        nonlocal mid_line
+        out.write(text)
+        out.flush()
+        mid_line = True
+
+    return report, stream, end_line
 
 
 def _detail(node: str, update: Mapping[str, Any]) -> str:

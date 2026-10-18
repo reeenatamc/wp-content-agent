@@ -103,11 +103,21 @@ limits are all settings: `.env.example` lists the common ones and
 | `POST` | `/runs/{id}/reject` | Reject. Nothing is created. |
 | `POST` | `/runs/{id}/retry` | Run the step that failed again, from the checkpoint taken just before it. Earlier steps are not run or paid for again. Retrying `publish_draft` makes no model calls. |
 | `POST` | `/runs/{id}/revise` | Send the draft back to the writer. Body: `{"note": "..."}`, 1 to 2000 characters, required. The run writes, reviews and waits for approval again. `409` when no human revisions are left. |
+| `GET` | `/runs/{id}/events` | Server-sent events: a `snapshot`, then a `node` event as each step finishes and `token` events with the writer's text, then `end` with the final snapshot. |
 | `POST` | `/webhooks/n8n` | Same as `POST /runs`, authenticated with `X-Webhook-Secret`. |
 
 The `/runs` endpoints take `Authorization: Bearer $API_TOKEN` when `API_TOKEN` is set, and
 the server refuses to listen beyond localhost without it. The webhook is off until
 `WEBHOOK_SECRET` is set.
+
+Watch a run live:
+
+```bash
+curl -N -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8000/runs/<id>/events
+```
+
+The writer returns structured output, so the streamed `token` text (also printed by the
+CLI as the draft is written) is the draft's JSON, not prose.
 
 [examples/n8n](examples/n8n) has a workflow that takes a brief from an n8n form, starts a
 run through the webhook and polls it until it waits for approval.

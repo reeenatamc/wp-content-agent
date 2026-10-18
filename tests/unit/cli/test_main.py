@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.fake_graph import fake_runner, flaky_publish
+from tests.fake_graph import fake_runner, flaky_publish, streaming_runner
 from wp_content_agent.cli.main import EXIT_FAILED, EXIT_OK, main
 from wp_content_agent.errors import LLMError
 from wp_content_agent.graph import AgentState
@@ -312,3 +312,13 @@ def test_run_opens_with_models(brief: Path) -> None:
     )
 
     assert opened == [True]
+
+
+def test_run_prints_the_writers_tokens_before_its_progress_line(brief: Path) -> None:
+    code, output = _cli(["run", "--brief", str(brief)], streaming_runner(), "l")
+
+    lines = output.splitlines()
+    write_line = next(i for i, line in enumerate(lines) if line.startswith("  write "))
+    assert code == EXIT_OK
+    assert lines[write_line - 1].startswith('{"title":"Caching Django querysets"')
+    assert lines[write_line - 1].endswith("}")

@@ -1,15 +1,17 @@
 """HTTP API: start runs, read them, approve, reject or revise, and an n8n webhook."""
 
+import asyncio
+import json
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from wp_content_agent.api.service import RunService
+from wp_content_agent.api.service import RunEvent, RunService
 from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
 from wp_content_agent.runner import AgentRunner
 from wp_content_agent.schemas import ApprovalDecision, Brief, RunSnapshot
@@ -107,6 +109,17 @@ def create_app(
     async def get_run(run_id: str, runs: Service) -> RunSnapshot:
         return await runs.get(run_id)
 
+    @router.get("/{run_id}/events")
+    async def run_events(run_id: str, runs: Service) -> StreamingResponse:
+        # Checked here so an unknown run is a 404, not an empty stream. Subscribing waits
+        # for the response to start, so a client that leaves first leaves nothing behind.
+        await runs.get(run_id)
+        return StreamingResponse(
+            _sse(lambda: runs.events(run_id), settings.sse_keepalive_s),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @router.post("/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
     async def approve_run(
         run_id: str, runs: Service, body: DecisionNote | None = None
@@ -151,6 +164,38 @@ def create_app(
         return {"status": "ok"}
 
     return app
+
+
+async def _sse(
+    subscribe: Callable[[], AsyncGenerator[RunEvent]], keepalive_s: float
+) -> AsyncIterator[str]:
+    """Server-sent events, with a comment line whenever nothing was sent for keepalive_s."""
+    rest = subscribe()
+    pending: asyncio.Task[RunEvent] | None = None
+    try:
+        while True:
+            # A timed-out wait must not cancel the read, or the event it was about to
+            # deliver would be lost; the same task is awaited again.
+            pending = pending or asyncio.ensure_future(anext(rest))
+            done, _ = await asyncio.wait({pending}, timeout=keepalive_s)
+            if not done:
+                yield ": keepalive\n\n"
+                continue
+            task, pending = pending, None
+            try:
+                yield _frame(task.result())
+            except StopAsyncIteration:
+                return
+    finally:
+        if pending is not None:
+            pending.cancel()
+            # The generator cannot be closed while that read is still running.
+            await asyncio.gather(pending, return_exceptions=True)
+        await rest.aclose()
+
+
+def _frame(event: RunEvent) -> str:
+    return f"event: {event.type}\ndata: {json.dumps(event.data)}\n\n"
 
 
 def _same(given: str, expected: SecretStr) -> bool:

@@ -5,10 +5,10 @@ import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 
-from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, usage
+from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, streaming_runner, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
 from wp_content_agent.graph import AgentState, next_revision_count
-from wp_content_agent.runner import AgentRunner, _config, _snapshot, checkpoint_serializer
+from wp_content_agent.runner import AgentRunner, _config, _snapshot, _text_of, checkpoint_serializer
 from wp_content_agent.schemas import (
     ApprovalDecision,
     Brief,
@@ -44,6 +44,50 @@ async def test_start_reports_progress_per_node() -> None:
     await runner.start(BRIEF, run_id="r1", on_progress=lambda node, update: seen.append(node))
 
     assert seen == ["plan", "gather_context", "write", "review"]
+
+
+async def test_start_forwards_only_the_writers_tokens() -> None:
+    runner = streaming_runner()
+    tokens: list[tuple[str, str]] = []
+
+    await runner.start(BRIEF, run_id="r1", on_token=lambda node, text: tokens.append((node, text)))
+
+    assert {node for node, _ in tokens} == {"write"}
+    assert len(tokens) > 1
+    assert "".join(text for _, text in tokens) == DRAFT.model_dump_json()
+
+
+async def test_a_raising_token_callback_does_not_fail_the_run() -> None:
+    runner = streaming_runner()
+
+    def broken(node: str, text: str) -> None:
+        raise OSError("closed pipe")
+
+    snapshot = await runner.start(BRIEF, run_id="r1", on_token=broken)
+
+    assert snapshot.status == RunStatus.AWAITING_APPROVAL
+
+
+async def test_usage_is_still_summed_while_streaming() -> None:
+    runner = streaming_runner()
+
+    snapshot = await runner.start(BRIEF, run_id="r1", on_token=lambda node, text: None)
+
+    assert [entry.node for entry in snapshot.usage] == ["plan", "write"]
+    assert snapshot.usage[1].input_tokens == 10
+    assert snapshot.usage[1].output_tokens == 5
+
+
+def test_text_of_keeps_only_the_text_blocks() -> None:
+    content = [
+        {"type": "thinking", "thinking": "hm"},
+        {"type": "text", "text": "ab"},
+        {"type": "text", "text": ""},
+        "c",
+    ]
+
+    assert _text_of(content) == "abc"
+    assert _text_of("plain") == "plain"
 
 
 async def test_start_generates_a_run_id() -> None:
