@@ -25,6 +25,9 @@ class AgentState(TypedDict, total=False):
     status: RunStatus
     # Each node appends its own entry, so the list is the per-node cost log for the run.
     usage: Annotated[list[NodeUsage], operator.add]
+    # Problems that did not stop the run but the person should hear about.
+    warnings: Annotated[list[str], operator.add]
+    error: str
 
 
 def next_revision_count(state: AgentState) -> int:
