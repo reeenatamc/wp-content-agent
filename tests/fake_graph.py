@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.fakes import fake_client
@@ -79,6 +80,21 @@ def flaky_publish(failures: int = 1) -> Any:
         }
 
     return publish_draft
+
+
+def streaming_runner(**overrides: Any) -> AgentRunner:
+    """A runner whose plan and write nodes call a streaming fake model, as the real ones do."""
+    planner, writer = fake_client(DRAFT), fake_client(DRAFT)
+
+    async def plan(state: AgentState) -> dict[str, Any]:
+        _, used = await planner.structured(Draft, [HumanMessage("plan")], node="plan")
+        return {"status": RunStatus.GATHERING, "usage": [used]}
+
+    async def write(state: AgentState) -> dict[str, Any]:
+        draft, used = await writer.structured(Draft, [HumanMessage("write")], node="write")
+        return {"draft": draft, "revision_count": next_revision_count(state), "usage": [used]}
+
+    return fake_runner(plan=plan, write=write, **overrides)
 
 
 def fake_runner(settings: Settings | None = None, **overrides: Any) -> AgentRunner:

@@ -1,12 +1,12 @@
 """Test doubles shared across unit tests."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import httpx
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, PrivateAttr
 
@@ -44,6 +44,7 @@ class FakeChatModel(BaseChatModel):
 
     _replies: list[AIMessage | BaseModel | Exception] = PrivateAttr(default_factory=list)
     _calls: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
+    _structured_reply: AIMessage | BaseModel | None = PrivateAttr(default=None)
 
     @classmethod
     def scripted(cls, *replies: AIMessage | BaseModel | Exception) -> "FakeChatModel":
@@ -66,10 +67,35 @@ class FakeChatModel(BaseChatModel):
             raise reply
         return reply
 
-    def _generate(self, messages: list[BaseMessage], *args: Any, **kwargs: Any) -> ChatResult:
+    def _reply(self, messages: Sequence[BaseMessage], structured: bool) -> AIMessage:
         reply = self._next(messages)
-        assert isinstance(reply, AIMessage), "expected a chat reply, got a structured one"
-        return ChatResult(generations=[ChatGeneration(message=reply)])
+        if structured:
+            # Remembered for the parsing step of with_structured_output.
+            self._structured_reply = reply
+            if not isinstance(reply, AIMessage):
+                return ai(reply.model_dump_json())
+        else:
+            assert isinstance(reply, AIMessage), "expected a chat reply, got a structured one"
+        assert isinstance(reply, AIMessage)
+        return reply
+
+    def _generate(
+        self, messages: list[BaseMessage], *args: Any, structured: bool = False, **kwargs: Any
+    ) -> ChatResult:
+        return ChatResult(generations=[ChatGeneration(message=self._reply(messages, structured))])
+
+    def _stream(
+        self, messages: list[BaseMessage], *args: Any, structured: bool = False, **kwargs: Any
+    ) -> Iterator[ChatGenerationChunk]:
+        """The reply in two pieces of text; usage, tool calls and metadata ride on the last."""
+        reply = self._reply(messages, structured)
+        text = reply.content if isinstance(reply.content, str) else ""
+        if not text:
+            yield ChatGenerationChunk(message=_chunk(reply, reply.content))
+            return
+        middle = len(text) // 2
+        yield ChatGenerationChunk(message=AIMessageChunk(content=text[:middle]))
+        yield ChatGenerationChunk(message=_chunk(reply, text[middle:]))
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Runnable[Any, AIMessage]:
         return self  # type: ignore[return-value]
@@ -79,13 +105,24 @@ class FakeChatModel(BaseChatModel):
     ) -> Runnable[Any, dict[str, Any]]:
         assert kwargs == {"method": "json_schema", "include_raw": True}, kwargs
 
-        def run(messages: list[BaseMessage]) -> dict[str, Any]:
-            reply = self._next(messages)
+        def parse(raw: AIMessage) -> dict[str, Any]:
+            reply = self._structured_reply
             if isinstance(reply, AIMessage):
-                return {"raw": reply, "parsed": None, "parsing_error": ValueError("bad")}
-            return {"raw": ai(), "parsed": reply, "parsing_error": None}
+                return {"raw": raw, "parsed": None, "parsing_error": ValueError("bad")}
+            return {"raw": raw, "parsed": reply, "parsing_error": None}
 
-        return RunnableLambda(run)
+        # A real chat-model call, so the reply streams like a provider's would.
+        return self.bind(structured=True) | RunnableLambda(parse)
+
+
+def _chunk(reply: AIMessage, text: str | list[str | dict[Any, Any]]) -> AIMessageChunk:
+    return AIMessageChunk(
+        content=text,
+        tool_calls=reply.tool_calls,
+        usage_metadata=reply.usage_metadata,
+        response_metadata=reply.response_metadata,
+        additional_kwargs=reply.additional_kwargs,
+    )
 
 
 def fake_client(*replies: AIMessage | BaseModel | Exception) -> ModelClient:

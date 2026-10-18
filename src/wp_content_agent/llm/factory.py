@@ -34,6 +34,8 @@ def build_chat_model(settings: Settings, model: str) -> BaseChatModel:
         timeout=settings.llm_timeout_s,
         max_retries=settings.llm_max_retries,
         max_tokens=settings.llm_max_tokens,
+        # OpenAI leaves usage out of streamed replies unless asked.
+        stream_usage=True,
     )
 
 

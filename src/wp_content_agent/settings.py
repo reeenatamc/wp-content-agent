@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     api_token: SecretStr | None = None
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8000, ge=0, le=65535)
+    # Idle seconds before an event stream sends a comment line, so proxies keep it open.
+    sse_keepalive_s: float = Field(default=15.0, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
     log_level: str = "INFO"
 

@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -7,9 +8,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from tests.fake_graph import fake_runner, flaky_publish
+from tests.fake_graph import fake_runner, flaky_publish, streaming_runner
 from wp_content_agent.api import create_app
-from wp_content_agent.api.service import RunService
+from wp_content_agent.api.app import _sse
+from wp_content_agent.api.service import RunEvent, RunService
 from wp_content_agent.errors import LLMError, ToolError
 from wp_content_agent.graph import AgentState
 from wp_content_agent.runner import AgentRunner
@@ -416,3 +418,99 @@ async def test_revise_with_no_revisions_left_conflicts() -> None:
 
     assert response.status_code == 409
     assert "no human revisions left" in response.json()["detail"]
+
+
+def _parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
+    events = []
+    for block in body.split("\n\n"):
+        if block and not block.startswith(":"):
+            event, data = block.split("\n")
+            events.append((event.removeprefix("event: "), json.loads(data.removeprefix("data: "))))
+    return events
+
+
+async def test_events_streams_a_live_run_to_its_end() -> None:
+    app = _app(streaming_runner())
+    async with _client(app) as client:
+        run_id = (await client.post("/runs", json=BRIEF)).json()["run_id"]
+        response = await client.get(f"/runs/{run_id}/events")
+
+    events = _parse_sse(response.text)
+    kinds = [kind for kind, _ in events]
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert (kinds[0], kinds[-1]) == ("snapshot", "end")
+    assert [data["node"] for kind, data in events if kind == "node"] == [
+        "plan",
+        "gather_context",
+        "write",
+        "review",
+    ]
+    assert "token" in kinds
+    assert events[-1][1]["status"] == "awaiting_approval"
+
+
+async def test_events_for_a_finished_run_are_a_snapshot_and_the_end() -> None:
+    app = _app()
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        response = await client.get(f"/runs/{run_id}/events")
+
+    events = _parse_sse(response.text)
+    assert [kind for kind, _ in events] == ["snapshot", "end"]
+    assert events[0][1]["run_id"] == run_id
+
+
+async def test_events_for_an_unknown_run_is_404() -> None:
+    app = _app()
+    async with _client(app) as client:
+        response = await client.get("/runs/nope/events")
+
+    assert response.status_code == 404
+
+
+async def test_events_need_the_api_token() -> None:
+    app = _app(api_token="tok-123")
+    async with _client(app) as client:
+        denied = await client.get("/runs/r1/events")
+        allowed = await client.get("/runs/r1/events", headers={"Authorization": "Bearer tok-123"})
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 404
+
+
+async def test_sse_sends_a_keepalive_while_the_run_is_quiet() -> None:
+    release = asyncio.Event()
+
+    async def slow() -> AsyncGenerator[RunEvent]:
+        yield RunEvent("snapshot")
+        await release.wait()
+        yield RunEvent("end")
+
+    events = slow()
+    stream = _sse(await anext(events), events, 0.01)
+
+    frames = [await anext(stream), await anext(stream)]
+    release.set()
+    frames.extend([frame async for frame in stream])
+
+    assert frames[0].startswith("event: snapshot")
+    assert frames[1] == ": keepalive\n\n"
+    assert frames[-1].startswith("event: end")
+
+
+async def test_closing_the_stream_unregisters_the_subscriber() -> None:
+    app = _app(streaming_runner())
+    async with _client(app) as client:
+        service = _service(app)
+        run_id = (await client.post("/runs", json=BRIEF)).json()["run_id"]
+        events = service.events(run_id)
+        stream = _sse(await anext(events), events, 1.0)
+        await anext(stream)
+        await anext(stream)
+
+        await stream.aclose()
+
+        assert run_id not in service._subscribers
+        await service.wait(run_id)

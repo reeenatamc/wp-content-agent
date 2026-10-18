@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 # Called after each node finishes, with the node name and the state update it returned.
 ProgressCallback = Callable[[str, Mapping[str, Any]], None]
+# Called for each piece of text the writer streams, with the node name and the text.
+TokenCallback = Callable[[str, str], None]
+
+# The only node whose streamed text is forwarded: the draft is what people want to watch.
+_STREAMED_NODE = "write"
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -94,6 +99,7 @@ class AgentRunner:
         *,
         run_id: str | None = None,
         on_progress: ProgressCallback | None = None,
+        on_token: TokenCallback | None = None,
     ) -> RunSnapshot:
         run_id = run_id or uuid.uuid4().hex
         async with self._lock(run_id):
@@ -101,7 +107,7 @@ class AgentRunner:
                 raise RunStateError(f"run {run_id} already exists")
             logger.info("starting run %s: %s", run_id, brief.topic)
             initial = {"brief": brief, "status": RunStatus.PLANNING}
-            return await self._drive(initial, run_id, on_progress)
+            return await self._drive(initial, run_id, on_progress, on_token=on_token)
 
     async def resume(
         self,
@@ -109,15 +115,20 @@ class AgentRunner:
         decision: ApprovalDecision,
         *,
         on_progress: ProgressCallback | None = None,
+        on_token: TokenCallback | None = None,
     ) -> RunSnapshot:
         async with self._lock(run_id):
             ensure_can_resume(_snapshot(run_id, await self._state(run_id)), decision)
             logger.info("resuming run %s: %s", run_id, _decision_kind(decision))
             payload: Command[Any] = Command(resume=decision.model_dump())
-            return await self._drive(payload, run_id, on_progress)
+            return await self._drive(payload, run_id, on_progress, on_token=on_token)
 
     async def retry(
-        self, run_id: str, *, on_progress: ProgressCallback | None = None
+        self,
+        run_id: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+        on_token: TokenCallback | None = None,
     ) -> RunSnapshot:
         """Run the node that failed again, from the checkpoint taken just before it."""
         async with self._lock(run_id):
@@ -138,6 +149,7 @@ class AgentRunner:
                 Command(update=update),
                 run_id,
                 on_progress,
+                on_token=on_token,
                 start_from=before.config,
                 retrying=failed_node,
             )
@@ -170,20 +182,27 @@ class AgentRunner:
         run_id: str,
         on_progress: ProgressCallback | None,
         *,
+        on_token: TokenCallback | None = None,
         start_from: RunnableConfig | None = None,
         retrying: str = "",
     ) -> RunSnapshot:
         config = _config(run_id)
         try:
-            async for chunk in self._graph.astream(
+            async for mode, data in self._graph.astream(
                 payload,
                 config if start_from is None else start_from,
                 context=self._context,
-                stream_mode="updates",
+                stream_mode=["updates", "messages"],
             ):
-                for node, update in chunk.items():
-                    if node != "__interrupt__" and on_progress is not None:
-                        _notify(on_progress, node, update or {})
+                if mode == "updates":
+                    for node, update in data.items():
+                        if node != "__interrupt__" and on_progress is not None:
+                            _notify(on_progress, node, update or {})
+                elif on_token is not None:
+                    message, metadata = data
+                    node = metadata.get("langgraph_node")
+                    if node == _STREAMED_NODE and (text := _text_of(message.content)):
+                        _notify_token(on_token, node, text)
         except BaseException as exc:
             # Cancellation and Ctrl-C also end the run, so it never stays half-done.
             await self._mark_failed(config, exc, retrying)
@@ -291,6 +310,25 @@ def _notify(callback: ProgressCallback, node: str, update: Mapping[str, Any]) ->
         callback(node, update)
     except Exception:
         logger.warning("progress callback failed for node %s", node, exc_info=True)
+
+
+def _notify_token(callback: TokenCallback, node: str, text: str) -> None:
+    try:
+        callback(node, text)
+    except Exception:
+        logger.warning("token callback failed for node %s", node, exc_info=True)
+
+
+def _text_of(content: str | list[str | dict[str, Any]]) -> str:
+    """The text in a chunk: a string, or the text blocks of a list (Anthropic)."""
+    if isinstance(content, str):
+        return content
+    parts = [
+        block if isinstance(block, str) else block.get("text") or ""
+        for block in content
+        if isinstance(block, str) or block.get("type") == "text"
+    ]
+    return "".join(parts)
 
 
 def _config(run_id: str) -> dict[str, Any]:

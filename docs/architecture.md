@@ -164,6 +164,19 @@ when it retries.
 `POST /runs/{id}/retry` follows the same pattern as approve: `404` for an unknown run,
 `409` while the run is busy or when it cannot be retried, `202` otherwise.
 
+`GET /runs/{id}/events` streams a run as server-sent events (`event: <type>` and a JSON
+`data:` line). The service registers the subscriber first, then sends `snapshot` with the
+current state, so nothing between the two is lost; an unknown run is a `404` before the
+stream starts. A run that is not busy sends `snapshot` and `end` and closes. A live run
+sends `node` (`{"node", "status"}`) after each step and `token` (`{"node": "write",
+"text"}`) for the writer's streamed text, and finishes with `end`, which carries the final
+snapshot. Only the writer's tokens are forwarded, and because it uses structured output
+they are the draft's JSON. Each subscriber has a bounded queue (`SUBSCRIBER_QUEUE_SIZE`);
+one that falls behind is dropped and its stream ends without `end`, and reconnecting gives
+a fresh snapshot. When nothing was sent for `SSE_KEEPALIVE_S` seconds a `: keepalive`
+comment is sent so proxies keep the connection open. Closing the connection unregisters
+the subscriber.
+
 On shutdown the service cancels its tasks and marks any run that had not finished as
 failed with "the server stopped during the run".
 
@@ -172,6 +185,7 @@ failed with "the server stopped during the run".
 | `POST /runs`, `POST /webhooks/n8n` | Start a run. |
 | `GET /runs/{id}` | Read a run. |
 | `POST /runs/{id}/approve`, `/reject` | Decide, with an optional note. |
+| `GET /runs/{id}/events` | Server-sent events for a run: snapshot, node, token, end. |
 | `POST /runs/{id}/revise` | Send the draft back to `write`. The note is required, 1 to 2000 characters. |
 
 | Error | Status |
