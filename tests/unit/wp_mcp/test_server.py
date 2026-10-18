@@ -63,6 +63,21 @@ async def test_create_draft_post_passes_validated_input(server: FastMCP, fake: F
     assert fake.drafts[0].meta_description == "m"
 
 
+async def test_create_draft_post_reports_a_reused_draft(server: FastMCP, fake: FakeClient) -> None:
+    fake.reuse = True
+
+    result = await _call(server, "create_draft_post", {"title": "T", "content_html": "<p>x</p>"})
+
+    assert not result.isError
+    assert result.structuredContent["reused"] is True
+
+
+async def test_create_draft_post_reports_a_new_draft(server: FastMCP) -> None:
+    result = await _call(server, "create_draft_post", {"title": "T", "content_html": "<p>x</p>"})
+
+    assert result.structuredContent["reused"] is False
+
+
 async def test_wordpress_error_becomes_tool_error(server: FastMCP) -> None:
     result = await _call(server, "create_tag", {"name": "boom"})
 

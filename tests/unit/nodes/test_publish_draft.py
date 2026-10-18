@@ -75,6 +75,18 @@ async def test_unsaved_meta_description_adds_warning() -> None:
     assert "meta description" in update["warnings"][0]
 
 
+async def test_reused_draft_adds_warning() -> None:
+    class Reused(FakeGateway):
+        async def create_draft_post(self, **fields: Any) -> CreatedDraft:
+            created = await super().create_draft_post(**fields)
+            return created.model_copy(update={"reused": True})
+
+    update = await publish_draft(_state(), runtime(wordpress=Reused()))  # type: ignore[arg-type]
+
+    assert update["status"] == RunStatus.DRAFT_CREATED
+    assert update["warnings"] == ["reused existing draft 8 instead of creating a second one"]
+
+
 async def test_non_draft_status_from_wordpress_raises() -> None:
     class Published(FakeGateway):
         async def create_draft_post(self, **fields: Any) -> CreatedDraft:

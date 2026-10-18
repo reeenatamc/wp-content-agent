@@ -198,10 +198,10 @@ strict mode and pytest on every push.
   `MAX_HUMAN_REVISIONS` of them (2 by default), and each one can cost up to
   `MAX_REVISIONS + 1` more writes, because the review loop runs again after the note.
 - Only a run that failed inside `publish_draft` can be retried; other failures need a
-  new run. If the failed request timed out, WordPress may have created the post anyway,
-  so check the site before retrying.
-- If the process dies after WordPress creates the post but before the checkpoint is
-  written, resuming creates a second draft.
+  new run. If the failed request timed out, WordPress may have created the post anyway;
+  the retry reuses a draft with the same slug, title and content instead of creating a
+  second one, and the run says so. A draft WordPress changed on save (a filtered title
+  or body) is not recognised, so check the site if the first attempt timed out.
 - The Gutenberg converter is tested against the block grammar, not against the editor
   itself, so an unusual structure may open as a Custom HTML block.
 - If the site has more categories or tags than `WP_MAX_TERM_PAGES` allows, the list is

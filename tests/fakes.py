@@ -103,6 +103,7 @@ class FakeWordPressClient(WordPressClient):
         )
         super().__init__(http, settings)
         self.drafts: list[CreateDraftInput] = []
+        self.reuse = False
 
     async def list_posts(self, search: str = "", per_page: int = 10) -> list[PostSummary]:
         return [PostSummary(id=1, title=f"{search}:{per_page}", link="l", status="draft")]
@@ -126,6 +127,7 @@ class FakeWordPressClient(WordPressClient):
             link="l",
             edit_url=self.edit_url(8),
             meta_description_saved=False,
+            reused=self.reuse,
         )
 
     async def get_post(self, post_id: int) -> PostDetail:

@@ -24,12 +24,18 @@ the Docker site is configured.
 | `list_categories` | | Every category with its id |
 | `list_tags` | `search` | Tags with their ids |
 | `create_tag` | `name` (1 to 60 chars) | The new tag, or the existing one with that name |
-| `create_draft_post` | `title`, `content_html`, `slug`, `excerpt`, `categories`, `tags`, `meta_description` | The post id, status and edit URL |
+| `create_draft_post` | `title`, `content_html`, `slug`, `excerpt`, `categories`, `tags`, `meta_description` | The post id, status and edit URL, and `reused` |
 
 There is no tool to publish, update or delete. `create_draft_post` always sends
 `status: draft`, and the agent checks that WordPress returned a draft before it reports
 success. Categories and tags are passed as ids; `create_tag` exists so a caller can turn
 new tag names into ids first.
+
+`create_draft_post` is safe to repeat. When a `slug` is given, the server first looks for a
+draft with that slug and exactly the same title. If it finds one, it returns that post with
+`reused: true` and creates nothing; otherwise it creates the post. This covers a create that
+timed out after WordPress made the post, and a retry after a crash. Without a `slug` there
+is nothing to look up, so every call creates a post.
 
 `meta_description` is stored in post meta under `WP_META_DESCRIPTION_KEY`
 (`meta_description` by default). WordPress ignores meta keys that are not registered for
@@ -49,8 +55,11 @@ Every request has a timeout (`WP_TIMEOUT_S`, 15 s). GET requests are retried on
 connection errors, timeouts, 429 and 5xx, with exponential backoff (`WP_BACKOFF_S`, up to
 `WP_MAX_RETRIES` times) and a `Retry-After` header honored up to `WP_MAX_RETRY_AFTER_S`.
 POST requests, which create posts and tags, are retried only when the request was never
-sent or got a 429. A POST that timed out may already have created the post, and retrying
-it would create a duplicate.
+sent or got a 429. A POST that timed out may already have created the post, so the server
+does not resend it. Before creating a draft it looks for one with the same slug, title and content
+(a GET, retried like the others), so repeating the call returns the existing draft instead
+of a second one. `create_tag` is already idempotent: WordPress answers `term_exists` and the
+server returns that tag.
 
 `list_categories` and `list_tags` follow the `X-WP-TotalPages` header up to
 `WP_MAX_TERM_PAGES` pages of 100. A site with more terms than that gets a truncated list

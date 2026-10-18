@@ -38,3 +38,4 @@ class CreatedDraft(BaseModel):
     link: str
     edit_url: str
     meta_description_saved: bool = False
+    reused: bool = False

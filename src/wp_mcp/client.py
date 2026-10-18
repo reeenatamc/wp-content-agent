@@ -103,6 +103,9 @@ class WordPressClient:
             raise _invalid_response(exc) from exc
 
     async def create_draft_post(self, draft: CreateDraftInput) -> DraftCreated:
+        existing = await self._find_draft(draft)
+        if existing is not None:
+            return self._draft_created(existing, draft, reused=True)
         body: dict[str, Any] = {
             "title": draft.title,
             "content": draft.content_html,
@@ -117,6 +120,28 @@ class WordPressClient:
         if draft.meta_description:
             body["meta"] = {self._settings.meta_description_key: draft.meta_description}
         data = await self._request("POST", "/posts", json=body)
+        return self._draft_created(data, draft, reused=False)
+
+    async def _find_draft(self, draft: CreateDraftInput) -> Any | None:
+        """A draft left by an earlier identical create: same slug, title and content.
+
+        Content is compared too, so a different post that happens to share the slug and
+        title (a second run on the same brief) is created rather than overwritten by
+        nothing.
+        """
+        if not draft.slug:
+            return None
+        params = {"slug": draft.slug, "status": "draft", "context": "edit", "per_page": 100}
+        data = await self._request("GET", "/posts", params=params)
+        if not isinstance(data, list):
+            raise _invalid_response(TypeError(f"expected a list, got {type(data).__name__}"))
+        for post in data:
+            if _raw(post, "title") == draft.title and _raw(post, "content") == draft.content_html:
+                logger.info("reusing draft %s with slug %r", post.get("id"), draft.slug)
+                return post
+        return None
+
+    def _draft_created(self, data: Any, draft: CreateDraftInput, *, reused: bool) -> DraftCreated:
         try:
             saved = False
             if draft.meta_description:
@@ -135,6 +160,7 @@ class WordPressClient:
                 link=data["link"],
                 edit_url=self.edit_url(data["id"]),
                 meta_description_saved=saved,
+                reused=reused,
             )
         except (KeyError, TypeError, AttributeError, ValidationError) as exc:
             raise _invalid_response(exc) from exc
@@ -252,3 +278,8 @@ def _json_or_none(response: httpx.Response) -> Any:
 
 def _invalid_response(exc: Exception) -> WordPressError:
     return WordPressError(f"unexpected response shape: {exc!r}", code="invalid_response")
+
+
+def _raw(post: Any, field: str) -> Any:
+    value = post.get(field) if isinstance(post, dict) else None
+    return value.get("raw") if isinstance(value, dict) else None
