@@ -1,11 +1,12 @@
 """Runtime configuration for the agent, loaded from the environment or `.env`."""
 
+import logging
 import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["anthropic", "openai"]
@@ -65,6 +66,14 @@ class Settings(BaseSettings):
     checkpoint_db: Path = Path("wpagent.sqlite")
     webhook_secret: SecretStr | None = None
     log_level: str = "INFO"
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        level = value.upper()
+        if level not in logging.getLevelNamesMapping():
+            raise ValueError(f"unknown log level {value!r}")
+        return level
 
     @model_validator(mode="after")
     def _resolve_models(self) -> Self:

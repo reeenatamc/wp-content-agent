@@ -35,3 +35,7 @@ class RunNotFoundError(AgentError):
 
 class RunStateError(AgentError):
     """The run is not in a state that allows the requested action."""
+
+
+class BriefError(AgentError):
+    """A brief file is missing, is not valid YAML or JSON, or does not match the schema."""
