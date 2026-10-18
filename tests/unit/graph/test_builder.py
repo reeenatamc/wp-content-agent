@@ -6,9 +6,17 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 
 from tests.fakes import fake_client
-from wp_content_agent.graph import AgentContext, AgentState, build_graph
-from wp_content_agent.schemas import Brief, Review, RunStatus
+from wp_content_agent.graph import AgentContext, AgentState, build_graph, next_revision_count
+from wp_content_agent.schemas import Brief, Draft, Review, RunStatus
 from wp_content_agent.settings import Settings
+
+DRAFT = Draft(
+    title="A draft title",
+    slug="a-draft",
+    excerpt="",
+    content_html="<p>x</p>",
+    meta_description="m",
+)
 
 
 class FakeNodes:
@@ -39,8 +47,7 @@ class FakeNodes:
 
     def write(self, state: AgentState) -> dict[str, Any]:
         self.calls["write"] += 1
-        revision = state.get("revision_count", 0) + (1 if "review" in state else 0)
-        return {"revision_count": revision}
+        return {"draft": DRAFT, "revision_count": next_revision_count(state)}
 
     def review(self, state: AgentState) -> dict[str, Any]:
         self.calls["review"] += 1
@@ -121,3 +128,18 @@ async def test_rejection_ends_without_publishing(context: AgentContext) -> None:
 def test_build_graph_rejects_missing_nodes() -> None:
     with pytest.raises(ValueError, match="publish_draft"):
         build_graph({"plan": lambda state: {}})  # type: ignore[dict-item]
+
+
+def test_build_graph_rejects_unknown_nodes() -> None:
+    nodes = FakeNodes(review_passes=[]).mapping()
+    nodes["publish"] = nodes.pop("publish_draft")
+
+    with pytest.raises(ValueError, match="unknown nodes: \\['publish'\\]"):
+        build_graph(nodes)  # type: ignore[arg-type]
+
+
+def test_next_revision_count_starts_at_zero_and_counts_rewrites() -> None:
+    first = next_revision_count({})
+    second = next_revision_count({"draft": DRAFT, "revision_count": 0})
+
+    assert (first, second) == (0, 1)

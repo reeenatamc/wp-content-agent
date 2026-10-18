@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -11,20 +11,15 @@ from wp_content_agent.graph.state import AgentState
 from wp_content_agent.schemas import RunStatus
 
 NodeName = Literal["plan", "gather_context", "write", "review", "human_approval", "publish_draft"]
-NODE_ORDER: tuple[NodeName, ...] = (
-    "plan",
-    "gather_context",
-    "write",
-    "review",
-    "human_approval",
-    "publish_draft",
-)
+NODE_ORDER: tuple[NodeName, ...] = get_args(NodeName)
 
 
 def route_after_review(
     state: AgentState, runtime: Runtime[AgentContext]
 ) -> Literal["write", "human_approval"]:
-    review = state["review"]
+    review = state.get("review")
+    if review is None:
+        raise ValueError("review node finished without writing a review")
     if review.passed or state.get("revision_count", 0) >= runtime.context.settings.max_revisions:
         return "human_approval"
     return "write"
@@ -43,10 +38,15 @@ def build_graph(
 
     Nodes are injected so tests can run the real wiring (review loop, interrupt,
     resume) with fakes. The production nodes live in `wp_content_agent.nodes`.
+
+    Contract for nodes: on failure they raise `AgentError`. The graph does not route
+    on error states; the caller catches the exception and marks the run as failed.
+    The write node sets `revision_count` with `next_revision_count`, which is what
+    bounds the review loop.
     """
-    missing = set(NODE_ORDER) - set(nodes)
-    if missing:
-        raise ValueError(f"missing nodes: {sorted(missing)}")
+    missing, unknown = set(NODE_ORDER) - set(nodes), set(nodes) - set(NODE_ORDER)
+    if missing or unknown:
+        raise ValueError(f"missing nodes: {sorted(missing)}; unknown nodes: {sorted(unknown)}")
 
     graph = StateGraph(AgentState, context_schema=AgentContext)
     for name in NODE_ORDER:

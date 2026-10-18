@@ -25,4 +25,10 @@ class AgentState(TypedDict, total=False):
     status: RunStatus
     # Each node appends its own entry, so the list is the per-node cost log for the run.
     usage: Annotated[list[NodeUsage], operator.add]
-    error: str
+
+
+def next_revision_count(state: AgentState) -> int:
+    """Revisions so far, counting the draft about to be written. The first draft is 0."""
+    if "draft" not in state:
+        return 0
+    return state.get("revision_count", 0) + 1
