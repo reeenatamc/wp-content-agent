@@ -143,6 +143,29 @@ To add it to Claude Desktop or another MCP host:
 [docs/mcp-server.md](docs/mcp-server.md) covers the tools, their limits and the retry
 behavior.
 
+## Deploy
+
+The `Dockerfile` builds the API with the MCP server inside, as a non-root user. It listens
+on every interface, so it refuses to start without `API_TOKEN`. To try it locally:
+
+```bash
+docker build -t wpagent .
+docker run --env-file .env -e API_TOKEN=change-me -p 8000:8000 -v wpagent-data:/data wpagent
+```
+
+A `WP_BASE_URL` of `localhost` points at the container itself; use
+`host.docker.internal` for a WordPress running on your machine.
+
+On [Railway](https://railway.com):
+
+1. Create a project from the GitHub repo. Railway finds the `Dockerfile` and sets `PORT`.
+2. Add a volume mounted at `/data`. Runs are kept in `/data/wpagent.sqlite`, so a run
+   waiting for approval survives a redeploy.
+3. Set the variables: `API_TOKEN`, `ANTHROPIC_API_KEY` (or `LLM_PROVIDER=openai` and
+   `OPENAI_API_KEY`), `WP_BASE_URL`, `WP_USERNAME`, `WP_APP_PASSWORD`, and `WEBHOOK_SECRET`
+   for n8n. WordPress must be reachable over HTTPS for application passwords.
+4. Generate a domain and keep one replica, since the per-run lock is in memory.
+
 ## Design decisions
 
 - The model writes plain HTML and code converts it to Gutenberg blocks. Models are better

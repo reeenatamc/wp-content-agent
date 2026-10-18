@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.claude
+*.sqlite
+*.sqlite-*
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+tests
+evals
+examples
+docs
+docker
+scripts
