@@ -8,7 +8,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Self
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from wp_mcp.errors import WordPressError
 from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
@@ -51,7 +51,7 @@ class WordPressClient:
         if search:
             params["search"] = search
         data = await self._request("GET", "/posts", params=params)
-        return [PostSummary.model_validate(item) for item in data]
+        return _validate_list(PostSummary, data)
 
     async def list_categories(self) -> list[Term]:
         return await self._list_terms("/categories", {})
@@ -68,8 +68,7 @@ class WordPressClient:
             query = {**params, "per_page": 100, "page": page, "_fields": "id,name,slug"}
             response = await self._send("GET", path, params=query)
             # Offset paging can repeat a term if the taxonomy changes between pages.
-            for item in _json_body(response, path):
-                term = Term.model_validate(item)
+            for term in _validate_list(Term, _json_body(response, path)):
                 terms[term.id] = term
             pages = _total_pages(response)
             if page >= self._settings.max_term_pages and pages > page:
@@ -88,11 +87,20 @@ class WordPressClient:
             data = await self._request("POST", "/tags", json={"name": name})
         except WordPressError as exc:
             term_id = exc.data.get("term_id")
-            if exc.status_code == 400 and exc.code == "term_exists" and term_id is not None:
+            if (
+                exc.status_code == 400
+                and exc.code == "term_exists"
+                and isinstance(term_id, int)
+                and not isinstance(term_id, bool)
+                and term_id > 0
+            ):
                 data = await self._request("GET", f"/tags/{term_id}")
             else:
                 raise
-        return Term.model_validate(data)
+        try:
+            return Term.model_validate(data)
+        except ValidationError as exc:
+            raise _invalid_response(exc) from exc
 
     async def create_draft_post(self, draft: CreateDraftInput) -> DraftCreated:
         body: dict[str, Any] = {
@@ -197,6 +205,15 @@ def _json_body(response: httpx.Response, path: str) -> Any:
             status_code=response.status_code,
             code="invalid_response",
         ) from exc
+
+
+def _validate_list[M: BaseModel](model: type[M], data: Any) -> list[M]:
+    if not isinstance(data, list):
+        raise _invalid_response(TypeError(f"expected a list, got {type(data).__name__}"))
+    try:
+        return [model.model_validate(item) for item in data]
+    except ValidationError as exc:
+        raise _invalid_response(exc) from exc
 
 
 def _total_pages(response: httpx.Response) -> int:

@@ -2,11 +2,14 @@
 
 import html
 import re
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, field_validator
 
 _TAG_RE = re.compile(r"<[^>]*>")
+
+# Rejects blank values without stripping them, so HTML whitespace reaches WordPress as sent.
+NonBlank = Annotated[str, Field(min_length=1, pattern=r"\S")]
 
 
 def clean_text(value: Any) -> str:
@@ -17,10 +20,10 @@ def clean_text(value: Any) -> str:
 
 
 class CreateDraftInput(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: Annotated[NonBlank, Field(max_length=200)]
     slug: str = Field(default="", max_length=200)
     excerpt: str = ""
-    content_html: str = Field(min_length=1)
+    content_html: NonBlank
     categories: list[int] = Field(default_factory=list)
     tags: list[int] = Field(default_factory=list)
     meta_description: str = Field(default="", max_length=320)
