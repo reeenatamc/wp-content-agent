@@ -11,7 +11,13 @@ import httpx
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command, StateSnapshot
 
-from wp_content_agent.errors import AgentError, LLMError, RunNotFoundError, RunStateError
+from wp_content_agent.errors import (
+    AgentError,
+    LLMError,
+    RunNotFoundError,
+    RunStateError,
+    RunStoppedError,
+)
 from wp_content_agent.graph import AgentContext, build_graph
 from wp_content_agent.llm import build_model_client
 from wp_content_agent.nodes import NODES
@@ -97,6 +103,10 @@ class AgentRunner:
 
     async def get(self, run_id: str) -> RunSnapshot:
         return _snapshot(run_id, await self._state(run_id))
+
+    async def mark_failed(self, run_id: str, message: str) -> None:
+        """Record a run that was stopped from outside, such as a server shutdown."""
+        await self._mark_failed(_config(run_id), RunStoppedError(message))
 
     def _lock(self, run_id: str) -> asyncio.Lock:
         return self._locks.setdefault(run_id, asyncio.Lock())

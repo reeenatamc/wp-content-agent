@@ -37,5 +37,13 @@ class RunStateError(AgentError):
     """The run is not in a state that allows the requested action."""
 
 
+class RunStoppedError(AgentError):
+    """A run was stopped from outside before it finished."""
+
+
+class RunLimitError(AgentError):
+    """Too many runs are in progress to start another one."""
+
+
 class BriefError(AgentError):
     """A brief file is missing, is not valid YAML or JSON, or does not match the schema."""

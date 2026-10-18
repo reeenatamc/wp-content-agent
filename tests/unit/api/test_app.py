@@ -80,7 +80,7 @@ async def test_approve_creates_the_draft() -> None:
         body = (await client.get(f"/runs/{run_id}")).json()
 
     assert accepted.status_code == 202
-    assert accepted.json()["status"] == "publishing"
+    assert accepted.json()["approval"] is None
     assert body["status"] == "draft_created"
     assert body["edit_url"].endswith("post=8&action=edit")
 
@@ -156,6 +156,86 @@ async def test_webhook_is_disabled_without_a_secret() -> None:
         response = await client.post("/webhooks/n8n", json=BRIEF, headers={"X-Webhook-Secret": ""})
 
     assert response.status_code == 503
+
+
+async def test_concurrent_approvals_get_one_conflict() -> None:
+    app = _app()
+    async with _client(app) as client:
+        run_id = await _started(client, app)
+        responses = await asyncio.gather(
+            client.post(f"/runs/{run_id}/approve"), client.post(f"/runs/{run_id}/reject")
+        )
+        await _service(app).wait(run_id)
+        final = (await client.get(f"/runs/{run_id}")).json()
+
+    assert sorted(r.status_code for r in responses) == [202, 409]
+    assert final["status"] in {"draft_created", "rejected"}
+
+
+async def test_idempotency_key_returns_the_same_run() -> None:
+    app = _app()
+    headers = {"Idempotency-Key": "brief-2026-10-18"}
+    async with _client(app) as client:
+        first = await client.post("/runs", json=BRIEF, headers=headers)
+        await _service(app).wait("brief-2026-10-18")
+        second = await client.post("/runs", json=BRIEF, headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert second.json()["run_id"] == "brief-2026-10-18"
+    assert second.json()["status"] == "awaiting_approval"
+
+
+async def test_invalid_idempotency_key_is_422() -> None:
+    app = _app()
+    async with _client(app) as client:
+        response = await client.post("/runs", json=BRIEF, headers={"Idempotency-Key": "a/b"})
+
+    assert response.status_code == 422
+
+
+async def test_too_many_runs_is_429() -> None:
+    gate = asyncio.Event()
+
+    async def plan(state: AgentState) -> dict[str, Any]:
+        await gate.wait()
+        return {}
+
+    app = _app(fake_runner(plan=plan), max_concurrent_runs=1)
+    async with _client(app) as client:
+        first = await client.post("/runs", json=BRIEF)
+        second = await client.post("/runs", json=BRIEF)
+        gate.set()
+        await _service(app).wait(first.json()["run_id"])
+
+    assert (first.status_code, second.status_code) == (202, 429)
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Authorization": "Bearer tok-123"}, 404),
+        ({"Authorization": "Bearer nope"}, 401),
+        ({}, 401),
+    ],
+)
+async def test_api_token_protects_run_endpoints(headers: dict[str, str], expected: int) -> None:
+    app = _app(api_token="tok-123")
+    async with _client(app) as client:
+        response = await client.get("/runs/missing", headers=headers)
+
+    assert response.status_code == expected
+
+
+async def test_shutdown_before_a_run_starts_marks_it_failed() -> None:
+    runner = fake_runner()
+    app = _app(runner)
+    async with _client(app) as client:
+        run_id = (await client.post("/runs", json=BRIEF)).json()["run_id"]
+
+    snapshot = await runner.get(run_id)
+    assert snapshot.status == "failed"
+    assert snapshot.error == "the server stopped during the run"
 
 
 async def test_shutdown_marks_running_runs_failed() -> None:

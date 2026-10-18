@@ -5,19 +5,23 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from wp_content_agent.api.service import RunService
-from wp_content_agent.errors import RunNotFoundError, RunStateError
+from wp_content_agent.errors import RunLimitError, RunNotFoundError, RunStateError
 from wp_content_agent.runner import AgentRunner
 from wp_content_agent.schemas import ApprovalDecision, Brief, RunSnapshot
 from wp_content_agent.settings import Settings, get_settings
 
 WEBHOOK_HEADER = "X-Webhook-Secret"
+# A retried request with the same key returns the existing run instead of a new one.
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+_KEY_PATTERN = r"^[A-Za-z0-9_-]{8,64}$"
 
 OpenRunner = Callable[[Settings], AbstractAsyncContextManager[AgentRunner]]
+IdempotencyKey = Annotated[str | None, Header(alias=IDEMPOTENCY_HEADER, pattern=_KEY_PATTERN)]
 
 
 class DecisionNote(BaseModel):
@@ -32,7 +36,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with open_runner(settings) as runner:
-            service = RunService(runner)
+            service = RunService(runner, settings.max_concurrent_runs)
             app.state.service = service
             try:
                 yield
@@ -41,13 +45,12 @@ def create_app(
 
     app = FastAPI(title="wp-content-agent", version="0.1.0", lifespan=lifespan)
 
-    @app.exception_handler(RunNotFoundError)
-    async def not_found(request: Request, exc: RunNotFoundError) -> JSONResponse:
-        return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_404_NOT_FOUND)
-
-    @app.exception_handler(RunStateError)
-    async def conflict(request: Request, exc: RunStateError) -> JSONResponse:
-        return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_409_CONFLICT)
+    for error, code in (
+        (RunNotFoundError, status.HTTP_404_NOT_FOUND),
+        (RunStateError, status.HTTP_409_CONFLICT),
+        (RunLimitError, status.HTTP_429_TOO_MANY_REQUESTS),
+    ):
+        app.add_exception_handler(error, _handler(code))
 
     def service(request: Request) -> RunService:
         run_service: RunService = request.app.state.service
@@ -55,48 +58,88 @@ def create_app(
 
     Service = Annotated[RunService, Depends(service)]
 
+    def check_token(authorization: Annotated[str | None, Header()] = None) -> None:
+        if settings.api_token is None:
+            return
+        scheme, _, token = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not _same(token, settings.api_token):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "missing or invalid bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     def check_secret(
         secret: Annotated[str | None, Header(alias=WEBHOOK_HEADER)] = None,
     ) -> None:
         expected = settings.webhook_secret
         if expected is None or not expected.get_secret_value():
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "webhook is disabled")
-        given = (secret or "").encode()
-        if not secrets.compare_digest(given, expected.get_secret_value().encode()):
+        if not _same(secret or "", expected):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid webhook secret")
 
-    @app.post("/runs", status_code=status.HTTP_202_ACCEPTED)
-    async def start_run(brief: Brief, runs: Service) -> RunSnapshot:
-        return runs.start(brief)
+    async def start(
+        brief: Brief, runs: RunService, response: Response, key: str | None
+    ) -> RunSnapshot:
+        snapshot, created = await runs.start(brief, run_id=key)
+        response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
+        return snapshot
 
-    @app.get("/runs/{run_id}")
+    async def decide(
+        runs: RunService, run_id: str, approved: bool, body: DecisionNote | None
+    ) -> RunSnapshot:
+        decision = ApprovalDecision(approved=approved, note=body.note if body else "")
+        return await runs.resume(run_id, decision)
+
+    router = APIRouter(prefix="/runs", dependencies=[Depends(check_token)])
+
+    @router.post("", status_code=status.HTTP_202_ACCEPTED)
+    async def start_run(
+        brief: Brief, runs: Service, response: Response, key: IdempotencyKey = None
+    ) -> RunSnapshot:
+        return await start(brief, runs, response, key)
+
+    @router.get("/{run_id}")
     async def get_run(run_id: str, runs: Service) -> RunSnapshot:
         return await runs.get(run_id)
 
-    @app.post("/runs/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
     async def approve_run(
         run_id: str, runs: Service, body: DecisionNote | None = None
     ) -> RunSnapshot:
-        note = body.note if body else ""
-        return await runs.resume(run_id, ApprovalDecision(approved=True, note=note))
+        return await decide(runs, run_id, True, body)
 
-    @app.post("/runs/{run_id}/reject", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/{run_id}/reject", status_code=status.HTTP_202_ACCEPTED)
     async def reject_run(
         run_id: str, runs: Service, body: DecisionNote | None = None
     ) -> RunSnapshot:
-        note = body.note if body else ""
-        return await runs.resume(run_id, ApprovalDecision(approved=False, note=note))
+        return await decide(runs, run_id, False, body)
+
+    app.include_router(router)
 
     @app.post(
         "/webhooks/n8n",
         status_code=status.HTTP_202_ACCEPTED,
         dependencies=[Depends(check_secret)],
     )
-    async def n8n_webhook(brief: Brief, runs: Service) -> RunSnapshot:
-        return runs.start(brief)
+    async def n8n_webhook(
+        brief: Brief, runs: Service, response: Response, key: IdempotencyKey = None
+    ) -> RunSnapshot:
+        return await start(brief, runs, response, key)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     return app
+
+
+def _same(given: str, expected: SecretStr) -> bool:
+    return secrets.compare_digest(given.encode(), expected.get_secret_value().encode())
+
+
+def _handler(code: int) -> Callable[[Request, Exception], JSONResponse]:
+    def handle(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=code)
+
+    return handle

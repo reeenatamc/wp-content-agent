@@ -65,9 +65,12 @@ class Settings(BaseSettings):
 
     checkpoint_db: Path = Path("wpagent.sqlite")
     webhook_secret: SecretStr | None = None
-    # Loopback by default: only the webhook checks a secret, the run endpoints do not.
+    # When set, every /runs endpoint needs "Authorization: Bearer <token>". Without it the
+    # API only accepts a loopback host.
+    api_token: SecretStr | None = None
     api_host: str = "127.0.0.1"
-    api_port: int = Field(default=8000, ge=1, le=65535)
+    api_port: int = Field(default=8000, ge=0, le=65535)
+    max_concurrent_runs: int = Field(default=3, ge=1)
     log_level: str = "INFO"
 
     @field_validator("log_level")

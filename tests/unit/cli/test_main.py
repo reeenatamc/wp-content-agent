@@ -179,3 +179,23 @@ def test_unknown_log_level_is_a_settings_error(
 
     assert code == EXIT_FAILED
     assert "unknown log level" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "example.com"])
+def test_serve_refuses_public_host_without_token(
+    host: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _ = _cli(["serve", "--host", host], fake_runner())
+
+    assert code == EXIT_FAILED
+    assert "without API_TOKEN" in capsys.readouterr().err
+
+
+def test_serve_passes_host_port_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: calls.append(kwargs))
+
+    code, _ = _cli(["serve", "--port", "0"], fake_runner())
+
+    assert code == EXIT_OK
+    assert (calls[0]["host"], calls[0]["port"]) == ("127.0.0.1", 0)
