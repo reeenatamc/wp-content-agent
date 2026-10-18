@@ -2,14 +2,39 @@
 
 The model writes plain HTML, which is easier for it and for the review checks. WordPress
 stores block editor content as HTML with block comments, so the conversion happens here,
-in code, just before the draft is created. Anything without a block mapping becomes a
-Custom HTML block, which the editor always accepts.
+in code, just before the draft is created. Paragraphs, headings, lists and quotes map to
+core blocks; other block-level elements become Custom HTML blocks, whose content is kept
+as written. Loose text and inline elements between blocks are grouped into paragraphs.
 """
 
+from dataclasses import dataclass, field
+from html import escape
 from html.parser import HTMLParser
 
 _LISTS = frozenset({"ul", "ol"})
-_VOID = frozenset({"br", "img", "hr"})
+_HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+_VOID = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source"}
+    | {"track", "wbr"}
+)
+_BLOCK_LEVEL = (
+    _LISTS
+    | _HEADINGS
+    | {"p", "blockquote", "div", "table", "pre", "figure", "section", "article", "aside"}
+    | {"header", "footer", "nav", "hr", "form", "details", "dl", "iframe", "video", "audio"}
+    | {"script", "style", "main", "address", "fieldset"}
+)
+_MORE = "<!-- wp:more -->\n<!--more-->\n<!-- /wp:more -->"
+
+
+@dataclass
+class _Frame:
+    tag: str
+    closing: str
+    # "run": inline element in a paragraph being grouped; "quote": quote block whose
+    # children are blocks; "list"/"item": core list markup; "raw": everything else.
+    kind: str
+    run: list[str] = field(default_factory=list)
 
 
 class _BlockWriter(HTMLParser):
@@ -17,51 +42,80 @@ class _BlockWriter(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.blocks: list[str] = []
         self._out: list[str] = []
-        # Each open element with the text that closes it (end tag plus block comment).
-        self._stack: list[tuple[str, str]] = []
-        self._loose: list[str] = []
+        self._stack: list[_Frame] = []
+        self._top_run: list[str] = []
+
+    # A container is the top level or a quote: places where children are blocks.
+    def _container(self) -> int | None:
+        """Index of the container that receives text now (-1 = top level), or None."""
+        index = len(self._stack) - 1
+        while index >= 0 and self._stack[index].kind == "run":
+            index -= 1
+        if index == -1 or self._stack[index].kind == "quote":
+            return index
+        return None
+
+    def _run(self, container: int) -> list[str]:
+        return self._top_run if container == -1 else self._stack[container].run
+
+    def _in_run(self, container: int) -> bool:
+        return len(self._stack) - 1 > container
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        parent = self._stack[-1][0] if self._stack else None
         raw = self.get_starttag_text() or f"<{tag}>"
-        if parent is None:
-            opening, closing = _top_level(tag, raw)
-        elif tag == "li" and parent in _LISTS:
-            opening, closing = "<!-- wp:list-item -->\n<li>", "</li>\n<!-- /wp:list-item -->"
-        elif tag in _LISTS and parent == "li":
-            opening, closing = _list(tag)
-        elif tag == "p" and parent == "blockquote" and len(self._stack) == 1:
-            opening, closing = "<!-- wp:paragraph -->\n<p>", "</p>\n<!-- /wp:paragraph -->"
+        container = self._container()
+        if container is not None and (self._in_run(container) or tag not in _BLOCK_LEVEL):
+            self._run(container).append(raw)
+            if tag not in _VOID:
+                self._stack.append(_Frame(tag, f"</{tag}>", "run"))
+            return
+        if container is not None:
+            self._flush_run(container)
+            opening, closing, kind = _block(tag, attrs, raw)
+            if container == -1:
+                self._out = []
         else:
-            opening, closing = raw, f"</{tag}>"
-        if parent is None:
-            self._flush_loose()
-            self._out = []
+            parent = self._stack[-1].kind
+            if tag == "li" and parent == "list":
+                opening, closing, kind = (
+                    "<!-- wp:list-item -->\n" + _open("li", attrs),
+                    "</li>\n<!-- /wp:list-item -->",
+                    "item",
+                )
+            elif tag in _LISTS and parent == "item":
+                opening, closing, kind = _list(tag, attrs)
+            else:
+                opening, closing, kind = raw, f"</{tag}>", "raw"
         self._out.append(opening)
         if tag in _VOID:
-            if parent is None:
+            if container is not None:  # a void element as a block, such as <hr>
                 self._out.append("\n<!-- /wp:html -->")
             self._finish_if_top_level()
             return
-        self._stack.append((tag, closing))
+        self._stack.append(_Frame(tag, closing, kind))
 
     def handle_endtag(self, tag: str) -> None:
-        if not any(open_tag == tag for open_tag, _ in self._stack):
-            return  # stray end tag
+        if tag in _VOID or not any(frame.tag == tag for frame in self._stack):
+            return
         while self._stack:
-            open_tag, closing = self._stack.pop()
-            self._out.append(closing)
-            if open_tag == tag:
+            frame = self._stack.pop()
+            if frame.kind == "run":
+                container = self._container()
+                self._run(-1 if container is None else container).append(frame.closing)
+            else:
+                if frame.kind == "quote":
+                    self._flush_run(len(self._stack), frame)
+                self._out.append(frame.closing)
+            if frame.tag == tag:
                 break
         self._finish_if_top_level()
 
     def handle_data(self, data: str) -> None:
-        if not self._stack:
-            self._loose.append(data)
-        elif [tag for tag, _ in self._stack] == ["blockquote"] and data.strip():
-            self._out.append(_paragraph(data.strip()))
-        else:
+        container = self._container()
+        if container is None:
             self._out.append(data)
+        else:
+            self._run(container).append(data)
 
     def handle_entityref(self, name: str) -> None:
         self.handle_data(f"&{name};")
@@ -69,19 +123,31 @@ class _BlockWriter(HTMLParser):
     def handle_charref(self, name: str) -> None:
         self.handle_data(f"&#{name};")
 
+    def handle_comment(self, data: str) -> None:
+        container = self._container()
+        if container is None:
+            self._out.append(f"<!--{data}-->")
+        elif container == -1 and data.strip() == "more":
+            self._flush_run(-1)
+            self.blocks.append(_MORE)
+        # Other comments between blocks would read as broken block markup; drop them.
+
     def close(self) -> None:
         super().close()
-        while self._stack:  # unclosed elements at the end of the input
-            self._out.append(self._stack.pop()[1])
-        self._finish_if_top_level()
-        self._flush_loose()
+        while self._stack:  # close whatever the input left open
+            self.handle_endtag(self._stack[-1].tag)
+        self._flush_run(-1)
 
-    def _flush_loose(self) -> None:
-        # Loose text between top-level elements becomes its own paragraph.
-        text = " ".join("".join(self._loose).split())
-        if text:
+    def _flush_run(self, container: int, frame: _Frame | None = None) -> None:
+        run = frame.run if frame is not None else self._run(container)
+        text = " ".join("".join(run).split())
+        run.clear()
+        if not text:
+            return
+        if container == -1:
             self.blocks.append(_paragraph(text))
-        self._loose = []
+        else:
+            self._out.append(_paragraph(text))
 
     def _finish_if_top_level(self) -> None:
         if not self._stack and self._out:
@@ -89,35 +155,46 @@ class _BlockWriter(HTMLParser):
             self._out = []
 
 
+def _open(tag: str, attrs: list[tuple[str, str | None]], css_class: str = "") -> str:
+    classes = " ".join(filter(None, [css_class, *(v or "" for k, v in attrs if k == "class")]))
+    parts = [f'class="{escape(classes)}"'] if classes else []
+    parts += [f'{k}="{escape(v or "")}"' for k, v in attrs if k != "class"]
+    return f"<{tag}{''.join(' ' + p for p in parts)}>"
+
+
 def _paragraph(text: str) -> str:
     return f"<!-- wp:paragraph -->\n<p>{text}</p>\n<!-- /wp:paragraph -->"
 
 
-def _top_level(tag: str, raw: str) -> tuple[str, str]:
+def _block(tag: str, attrs: list[tuple[str, str | None]], raw: str) -> tuple[str, str, str]:
     if tag == "p":
-        return "<!-- wp:paragraph -->\n<p>", "</p>\n<!-- /wp:paragraph -->"
-    if tag in {"h2", "h3", "h4"}:
+        opening = f"<!-- wp:paragraph -->\n{_open('p', attrs)}"
+        return opening, "</p>\n<!-- /wp:paragraph -->", "raw"
+    if tag in _HEADINGS:
         level = int(tag[1])
-        attrs = "" if level == 2 else f' {{"level":{level}}}'
+        settings = "" if level == 2 else f' {{"level":{level}}}'
         return (
-            f'<!-- wp:heading{attrs} -->\n<{tag} class="wp-block-heading">',
+            f"<!-- wp:heading{settings} -->\n{_open(tag, attrs, 'wp-block-heading')}",
             f"</{tag}>\n<!-- /wp:heading -->",
+            "raw",
         )
     if tag in _LISTS:
-        return _list(tag)
+        return _list(tag, attrs)
     if tag == "blockquote":
         return (
-            '<!-- wp:quote -->\n<blockquote class="wp-block-quote">',
+            f"<!-- wp:quote -->\n{_open('blockquote', attrs, 'wp-block-quote')}",
             "</blockquote>\n<!-- /wp:quote -->",
+            "quote",
         )
-    return f"<!-- wp:html -->\n{raw}", f"</{tag}>\n<!-- /wp:html -->"
+    return f"<!-- wp:html -->\n{raw}", f"</{tag}>\n<!-- /wp:html -->", "raw"
 
 
-def _list(tag: str) -> tuple[str, str]:
-    attrs = ' {"ordered":true}' if tag == "ol" else ""
+def _list(tag: str, attrs: list[tuple[str, str | None]]) -> tuple[str, str, str]:
+    settings = ' {"ordered":true}' if tag == "ol" else ""
     return (
-        f'<!-- wp:list{attrs} -->\n<{tag} class="wp-block-list">',
+        f"<!-- wp:list{settings} -->\n{_open(tag, attrs, 'wp-block-list')}",
         f"</{tag}>\n<!-- /wp:list -->",
+        "list",
     )
 
 
