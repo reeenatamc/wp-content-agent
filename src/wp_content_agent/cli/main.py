@@ -97,7 +97,9 @@ def _parser() -> argparse.ArgumentParser:
         decide.add_argument("--note", default="", help="note stored with the decision")
         decide.set_defaults(command=_decide, approved=approved)
 
-    retry = commands.add_parser("retry", help="create the draft again for a run that failed there")
+    retry = commands.add_parser(
+        "retry", help="run the failed step again for a run that failed in a node"
+    )
     retry.add_argument("run_id")
     retry.set_defaults(command=_retry)
 

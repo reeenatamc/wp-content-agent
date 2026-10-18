@@ -20,6 +20,16 @@ _UNFINISHED = {
     RunStatus.PUBLISHING,
 }
 
+# What a run reports while the node that failed runs again.
+_RETRY_STATUS = {
+    "plan": RunStatus.PLANNING,
+    "gather_context": RunStatus.GATHERING,
+    "write": RunStatus.WRITING,
+    "review": RunStatus.REVIEWING,
+    "human_approval": RunStatus.AWAITING_APPROVAL,
+    "publish_draft": RunStatus.PUBLISHING,
+}
+
 
 class RunService:
     """One background task per run id at a time, and at most `max_runs` at once."""
@@ -76,9 +86,7 @@ class RunService:
             self._busy.discard(run_id)
             raise
         self._spawn(run_id, self._runner.retry(run_id))
-        return snapshot.model_copy(
-            update={"status": RunStatus.PUBLISHING, "error": None, "can_retry": False}
-        )
+        return _retrying(snapshot)
 
     async def get(self, run_id: str) -> RunSnapshot:
         try:
@@ -89,10 +97,8 @@ class RunService:
                 return RunSnapshot(run_id=run_id, status=RunStatus.PLANNING)
             raise
         if run_id in self._busy and snapshot.can_retry:
-            # A retry that has not written its first update yet, or is publishing now.
-            return snapshot.model_copy(
-                update={"status": RunStatus.PUBLISHING, "error": None, "can_retry": False}
-            )
+            # A retry that has not written its first update yet, or is running now.
+            return _retrying(snapshot)
         return snapshot
 
     async def wait(self, run_id: str) -> None:
@@ -128,6 +134,11 @@ class RunService:
             return
         if (exc := task.exception()) is not None:
             logger.error("background work for run %s raised", run_id, exc_info=exc)
+
+
+def _retrying(snapshot: RunSnapshot) -> RunSnapshot:
+    status = _RETRY_STATUS.get(snapshot.failed_node or "", RunStatus.PLANNING)
+    return snapshot.model_copy(update={"status": status, "error": None, "can_retry": False})
 
 
 def _status_after(decision: ApprovalDecision) -> RunStatus:

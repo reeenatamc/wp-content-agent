@@ -96,7 +96,7 @@ as a subprocess and opens an HTTP client. All three close together.
 
 `start` refuses a run id that already exists. `resume` refuses a run that is not waiting
 for approval, and a revise decision when no human revisions are left. `retry` refuses a
-run unless it failed inside `publish_draft` without a post id. Each run id has an
+run unless a node failed in it and it has no post id. Each run id has an
 `asyncio.Lock`, so two approvals of the same run cannot
 create two drafts in one process.
 
@@ -114,14 +114,24 @@ its message. Any other exception is reported as "internal error (TypeError); see
 logs", because exception text can carry URLs or file paths. Cancellation and Ctrl-C also
 mark the run failed before they propagate. Usage recorded before the failure is kept.
 
-A run that failed inside `publish_draft` can be retried. The runner stores the node that
-raised in `failed_node`, and the snapshot reports `can_retry` when that node is
-`publish_draft` and no `wp_post_id` is set. `retry` clears the error, writes
-`status: publishing` as the approval node and drives the graph again, so only
-`publish_draft` runs, with the approved draft from the checkpoint and no model calls.
-If the failed request timed out, WordPress may have created the post anyway; the retry
-finds the draft with the same slug, title and content and reuses it instead of creating a second
-one, and the run gets a warning.
+A run that failed in any node can be retried. The runner stores the node that raised in
+`failed_node`, and the snapshot reports `can_retry` when it is set, no `wp_post_id`
+exists, no approval is pending, and the run is either `failed` or stopped with that node
+still pending (a retry that died mid-way). `retry` looks in the checkpoint history for
+the newest checkpoint whose pending node is `failed_node`, which is the state that node
+started from, and streams from it with `Command(update=...)`. That forks the history: the
+nodes before it are not run or paid for again, and the failed attempt stays in the old
+branch. The update carries `failed_node` and the usage entries the failed attempt
+billed (the `LLMError` usage), which the fork does not have, so the snapshot counts every
+billed call once. It is applied as input, not with `aupdate_state`, because that call
+evaluates the edges of the last writer and the review router needs the run context,
+which it does not get.
+
+A failure in `human_approval` (an invalid decision) is retryable: the node starts again,
+the run waits for approval and a new decision can be sent. A run waiting for approval is
+never retryable. If a failed `publish_draft` request timed out, WordPress may have
+created the post anyway; the retry finds the draft with the same slug, title and content
+and reuses it instead of creating a second one, and the run gets a warning.
 
 Model calls have a timeout and retries from the provider SDK (`LLM_TIMEOUT_S`,
 `LLM_MAX_RETRIES`). WordPress calls have their own timeouts and retries, described in

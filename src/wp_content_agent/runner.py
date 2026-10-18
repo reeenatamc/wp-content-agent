@@ -36,9 +36,6 @@ from wp_content_agent.tools.mcp_gateway import connect_wordpress
 
 logger = logging.getLogger(__name__)
 
-# PUBLISHING too: a retry that died before publish_draft finished can be retried again.
-_RETRYABLE = {RunStatus.FAILED, RunStatus.PUBLISHING}
-
 # Called after each node finishes, with the node name and the state update it returned.
 ProgressCallback = Callable[[str, Mapping[str, Any]], None]
 
@@ -121,19 +118,22 @@ class AgentRunner:
     async def retry(
         self, run_id: str, *, on_progress: ProgressCallback | None = None
     ) -> RunSnapshot:
-        """Run publish_draft again for a run that failed there, with the approved draft."""
+        """Run the node that failed again, from the checkpoint taken just before it."""
         async with self._lock(run_id):
-            ensure_can_retry(_snapshot(run_id, await self._state(run_id)))
-            logger.info("retrying publish for run %s", run_id)
-            # Written as the approval node, so the graph routes on to publish_draft.
-            # failed_node stays set: if the process dies before publish_draft finishes,
-            # the run is still retryable instead of stuck at publishing.
-            await self._graph.aupdate_state(
-                _config(run_id),
-                {"status": RunStatus.PUBLISHING, "error": ""},
-                as_node="human_approval",
-            )
-            return await self._drive(None, run_id, on_progress)
+            latest = await self._state(run_id)
+            ensure_can_retry(_snapshot(run_id, latest))
+            failed_node = latest.values["failed_node"]
+            logger.info("retrying %s for run %s", failed_node, run_id)
+            before = await self._checkpoint_before(run_id, failed_node)
+            if before is None:
+                raise RunStateError(f"run {run_id} has no checkpoint before {failed_node}")
+            # Billed by the failed attempt but absent from the fork's lineage.
+            billed = latest.values.get("usage", [])
+            missing = billed[len(before.values.get("usage", [])) :]
+            update: dict[str, Any] = {"failed_node": failed_node, "usage": missing}
+            # Streaming from an old checkpoint forks the history. The update is applied as
+            # input, so no edge is evaluated and the pending node stays the one that failed.
+            return await self._drive(Command(update=update), run_id, on_progress, before.config)
 
     async def get(self, run_id: str) -> RunSnapshot:
         return _snapshot(run_id, await self._state(run_id))
@@ -149,13 +149,25 @@ class AgentRunner:
         state: StateSnapshot = await self._graph.aget_state(_config(run_id))
         return state
 
+    async def _checkpoint_before(self, run_id: str, node: str) -> StateSnapshot | None:
+        """The newest checkpoint whose pending node is `node`: where it last started from."""
+        async for state in self._graph.aget_state_history(_config(run_id)):
+            if state.next == (node,):
+                found: StateSnapshot = state
+                return found
+        return None
+
     async def _drive(
-        self, payload: Any, run_id: str, on_progress: ProgressCallback | None
+        self,
+        payload: Any,
+        run_id: str,
+        on_progress: ProgressCallback | None,
+        start_from: Any = None,
     ) -> RunSnapshot:
         config = _config(run_id)
         try:
             async for chunk in self._graph.astream(
-                payload, config, context=self._context, stream_mode="updates"
+                payload, start_from or config, context=self._context, stream_mode="updates"
             ):
                 for node, update in chunk.items():
                     if node != "__interrupt__" and on_progress is not None:
@@ -183,7 +195,7 @@ class AgentRunner:
         if isinstance(exc, LLMError) and exc.usage is not None:
             values["usage"] = [exc.usage]
         try:
-            # The node that raised is still pending; only publish_draft can be retried.
+            # The node that raised is still pending; retry restarts from just before it.
             pending = (await self._graph.aget_state(config)).next
         except Exception:
             # Marking the run failed matters more than knowing where it stopped.
@@ -199,11 +211,11 @@ class AgentRunner:
 
 
 def ensure_can_retry(snapshot: RunSnapshot) -> None:
-    """Raise RunStateError unless the run failed inside publish_draft. Nothing has run yet."""
+    """Raise RunStateError unless the run failed in a node. Nothing has run yet."""
     if not snapshot.can_retry:
         raise RunStateError(
-            f"run {snapshot.run_id} cannot be retried; only a run that failed while"
-            " creating the draft can"
+            f"run {snapshot.run_id} cannot be retried; only a run that failed in a node"
+            " can be retried"
         )
 
 
@@ -233,10 +245,13 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
     if interrupts and status == RunStatus.AWAITING_APPROVAL:
         approval = ApprovalRequest.model_validate(interrupts[0].value)
     review = values.get("review")
+    failed_node = values.get("failed_node") or None
+    # Failed, or a retry that died mid-way: the next node is still the one that failed.
     can_retry = (
-        status in _RETRYABLE
-        and values.get("failed_node") == "publish_draft"
+        failed_node is not None
         and not values.get("wp_post_id")
+        and approval is None
+        and (status == RunStatus.FAILED or state.next == (failed_node,))
     )
     return RunSnapshot(
         run_id=run_id,
@@ -249,6 +264,7 @@ def _snapshot(run_id: str, state: StateSnapshot) -> RunSnapshot:
         warnings=values.get("warnings", []),
         error=values.get("error") or None,
         can_retry=can_retry,
+        failed_node=failed_node,
         usage=values.get("usage", []),
     )
 

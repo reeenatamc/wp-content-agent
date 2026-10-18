@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.types import Command
 
 from tests.fake_graph import BRIEF, DRAFT, fake_runner, flaky_publish, usage
 from wp_content_agent.errors import LLMError, RunNotFoundError, RunStateError, ToolError
@@ -257,12 +258,12 @@ async def test_publish_failure_can_be_retried() -> None:
     assert snapshot.can_retry is False
 
 
-async def test_retry_that_died_before_publishing_can_be_retried_again() -> None:
+async def test_retry_that_died_mid_way_can_be_retried_again() -> None:
     runner, _ = await _failed_at_publish()
-    # What retry writes before publish_draft runs, as if the process died right after.
-    await runner._graph.aupdate_state(
-        _config("r1"), {"status": RunStatus.PUBLISHING, "error": ""}, as_node="human_approval"
-    )
+    before = await runner._checkpoint_before("r1", "publish_draft")
+    assert before is not None
+    # What retry writes before the node runs, as if the process died right after.
+    await runner._graph.aupdate_state(before.config, {"failed_node": "publish_draft"})
 
     stuck = await runner.get("r1")
     snapshot = await runner.retry("r1")
@@ -291,17 +292,163 @@ async def test_retry_can_fail_again_and_be_retried_again() -> None:
     assert third.status == RunStatus.DRAFT_CREATED
 
 
-async def test_retry_refuses_a_failure_in_another_node() -> None:
-    def review(state: AgentState) -> dict[str, Any]:
-        raise LLMError("review failed")
+def _failing_once(node: str, error: Exception, success: dict[str, Any] | None = None) -> Any:
+    """A node that raises `error` on its first call, then bills one entry and returns `success`."""
+    calls = 0
 
-    runner = fake_runner(review=review)
+    def run(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error
+        return {**(success or {}), "usage": [usage(node)]}
+
+    return run
+
+
+async def _retry_with_progress(runner: AgentRunner) -> tuple[RunSnapshot, list[str]]:
+    progress: list[str] = []
+    snapshot = await runner.retry("r1", on_progress=lambda node, update: progress.append(node))
+    return snapshot, progress
+
+
+async def test_retry_of_the_first_node_runs_the_whole_graph_once() -> None:
+    plan = _failing_once("plan", LLMError("plan failed", usage("plan")))
+    runner = fake_runner(plan=plan)
     failed = await runner.start(BRIEF, run_id="r1")
 
-    with pytest.raises(RunStateError, match="cannot be retried"):
-        await runner.retry("r1")
+    snapshot, progress = await _retry_with_progress(runner)
 
-    assert failed.can_retry is False
+    assert (failed.status, failed.can_retry, failed.failed_node) == (RunStatus.FAILED, True, "plan")
+    assert progress == ["plan", "gather_context", "write", "review"]
+    assert (snapshot.status, snapshot.error, snapshot.can_retry) == (
+        RunStatus.AWAITING_APPROVAL,
+        None,
+        False,
+    )
+    assert [entry.node for entry in snapshot.usage] == ["plan", "plan"]
+
+
+async def test_retry_of_a_node_without_usage_adds_nothing_to_the_cost() -> None:
+    runner = fake_runner(
+        gather_context=_failing_once(
+            "gather_context", ToolError("x"), {"status": RunStatus.WRITING}
+        )
+    )
+    await runner.start(BRIEF, run_id="r1")
+
+    snapshot, progress = await _retry_with_progress(runner)
+
+    assert progress == ["gather_context", "write", "review"]
+    assert [entry.node for entry in snapshot.usage] == ["plan", "gather_context"]
+
+
+async def test_retry_of_review_does_not_write_again() -> None:
+    review = _failing_once(
+        "review",
+        LLMError("review failed", usage("review")),
+        {"review": Review(passed=True, checks=[], fixes=[]), "status": RunStatus.AWAITING_APPROVAL},
+    )
+    runner = fake_runner(review=review)
+    await runner.start(BRIEF, run_id="r1")
+
+    snapshot, progress = await _retry_with_progress(runner)
+
+    assert progress == ["review"]
+    assert snapshot.status == RunStatus.AWAITING_APPROVAL
+    assert [entry.node for entry in snapshot.usage] == ["plan", "review", "review"]
+
+
+async def test_retry_of_write_inside_the_review_loop_keeps_the_earlier_revisions() -> None:
+    calls = 0
+
+    def write(state: AgentState) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise LLMError("write failed", usage("write"))
+        return {
+            "draft": DRAFT,
+            "revision_count": next_revision_count(state),
+            "usage": [usage("write")],
+        }
+
+    def review(state: AgentState) -> dict[str, Any]:
+        passed = state["revision_count"] > 0
+        return {
+            "review": Review(passed=passed, checks=[], fixes=[]),
+            "status": RunStatus.AWAITING_APPROVAL,
+            "usage": [usage("review")],
+        }
+
+    runner = fake_runner(write=write, review=review)
+    failed = await runner.start(BRIEF, run_id="r1")
+
+    snapshot, progress = await _retry_with_progress(runner)
+
+    assert failed.failed_node == "write"
+    assert progress == ["write", "review"]
+    assert (snapshot.status, snapshot.revision_count) == (RunStatus.AWAITING_APPROVAL, 1)
+    nodes = [entry.node for entry in snapshot.usage]
+    assert nodes == ["plan", "write", "review", "write", "write", "review"]
+
+
+async def test_usage_of_a_retry_that_fails_again_is_counted_once_per_attempt() -> None:
+    attempts = iter([LLMError("one", usage("review")), LLMError("two", usage("review"))])
+
+    def review(state: AgentState) -> dict[str, Any]:
+        for error in attempts:
+            raise error
+        return {
+            "review": Review(passed=True, checks=[], fixes=[]),
+            "status": RunStatus.AWAITING_APPROVAL,
+            "usage": [usage("review")],
+        }
+
+    runner = fake_runner(review=review)
+    await runner.start(BRIEF, run_id="r1")
+
+    second = await runner.retry("r1")
+    third = await runner.retry("r1")
+
+    assert (second.status, second.can_retry) == (RunStatus.FAILED, True)
+    assert [entry.node for entry in second.usage] == ["plan", "review", "review"]
+    assert [entry.node for entry in third.usage] == ["plan", "review", "review", "review"]
+    assert third.status == RunStatus.AWAITING_APPROVAL
+
+
+async def test_invalid_approval_decision_can_be_retried_into_a_new_approval() -> None:
+    runner = fake_runner()
+    await runner.start(BRIEF, run_id="r1")
+    await runner._drive(Command(resume={"approved": "perhaps"}), "r1", None)
+    failed = await runner.get("r1")
+
+    waiting = await runner.retry("r1")
+    done = await runner.resume("r1", ApprovalDecision(approved=True))
+
+    assert (failed.status, failed.failed_node, failed.can_retry) == (
+        RunStatus.FAILED,
+        "human_approval",
+        True,
+    )
+    assert (waiting.status, waiting.can_retry) == (RunStatus.AWAITING_APPROVAL, False)
+    assert waiting.approval is not None
+    assert (done.status, done.wp_post_id) == (RunStatus.DRAFT_CREATED, 8)
+
+
+async def test_retry_refuses_a_run_that_was_never_marked_failed() -> None:
+    runner = fake_runner()
+    await runner.start(BRIEF, run_id="r1")
+    before = await runner._checkpoint_before("r1", "human_approval")
+    assert before is not None
+    # A failed_node left over while the run waits for approval must not offer a retry.
+    await runner._drive(
+        Command(update={"failed_node": "human_approval"}), "r1", None, before.config
+    )
+
+    snapshot = await runner.get("r1")
+
+    assert (snapshot.status, snapshot.can_retry) == (RunStatus.AWAITING_APPROVAL, False)
 
 
 async def test_retry_refuses_a_post_that_came_back_non_draft() -> None:
