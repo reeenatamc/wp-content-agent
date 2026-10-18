@@ -1,0 +1,6 @@
+topic: Making Python Docker images smaller
+audience: Backend developers who ship services in containers
+target_words: 700
+keywords: [docker, python, multi-stage builds]
+source_urls:
+  - https://docs.docker.com/build/building/best-practices/

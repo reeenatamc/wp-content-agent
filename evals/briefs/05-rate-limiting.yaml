@@ -1,0 +1,5 @@
+# No sources on purpose: the post has to stay general and must not invent numbers.
+topic: Rate limiting a public REST API
+audience: Backend developers designing their first public API
+target_words: 800
+keywords: [rate limiting, rest api, token bucket]

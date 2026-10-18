@@ -1,0 +1,6 @@
+topic: Caching Django querysets without serving stale data
+audience: Backend developers who already run Django in production
+target_words: 900
+keywords: [django, caching, querysets]
+source_urls:
+  - https://docs.djangoproject.com/en/5.2/topics/cache/
