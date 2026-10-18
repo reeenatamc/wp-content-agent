@@ -90,3 +90,36 @@ async def test_per_page_limit_is_in_the_tool_schema(server: FastMCP) -> None:
 
     list_posts = next(t for t in tools.tools if t.name == "list_posts")
     assert list_posts.inputSchema["properties"]["per_page"]["maximum"] == 20
+
+
+@pytest.mark.parametrize("field", ["title", "content_html"])
+async def test_blank_draft_fields_are_rejected(
+    field: str, server: FastMCP, fake: FakeClient
+) -> None:
+    args = {"title": "T", "content_html": "<p>x</p>", field: "   "}
+
+    result = await _call(server, "create_draft_post", args)
+
+    assert result.isError
+    assert fake.drafts == []
+
+
+async def test_get_post_runs_through_the_session(server: FastMCP) -> None:
+    result = await _call(server, "get_post", {"post_id": 7})
+
+    assert not result.isError
+    assert result.structuredContent["id"] == 7
+
+
+async def test_list_tags_runs_through_the_session(server: FastMCP) -> None:
+    result = await _call(server, "list_tags", {"search": "dj"})
+
+    assert not result.isError
+    assert result.structuredContent["result"][0]["slug"] == "django"
+
+
+async def test_list_categories_runs_through_the_session(server: FastMCP) -> None:
+    result = await _call(server, "list_categories", {})
+
+    assert not result.isError
+    assert result.structuredContent["result"][0]["slug"] == "backend"

@@ -12,9 +12,9 @@ class WPSettings(BaseSettings):
     base_url: str = "http://localhost:8080"
     username: str = Field(min_length=1)
     app_password: SecretStr = Field(min_length=1)
-    timeout_s: float = 15
-    max_retries: int = 3
-    backoff_s: float = 0.5
+    timeout_s: float = Field(default=15, gt=0)
+    max_retries: int = Field(default=3, ge=0)
+    backoff_s: float = Field(default=0.5, ge=0)
     # Upper bound for a Retry-After header, so a rate limit cannot stall a run for long.
     max_retry_after_s: float = Field(default=30, ge=0)
     # Categories and tags are read 100 per page, up to this many pages.

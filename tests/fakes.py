@@ -14,7 +14,7 @@ from wp_content_agent.llm import ModelClient
 from wp_content_agent.settings import ModelPrice
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import CreateDraftInput, DraftCreated, PostSummary, Term
+from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
 from wp_mcp.settings import WPSettings
 
 PRICES = {"fake-model": ModelPrice(input=1.0, output=2.0)}
@@ -126,4 +126,9 @@ class FakeWordPressClient(WordPressClient):
             link="l",
             edit_url=self.edit_url(8),
             meta_description_saved=False,
+        )
+
+    async def get_post(self, post_id: int) -> PostDetail:
+        return PostDetail(
+            id=post_id, title="T", status="draft", link="l", edit_url=self.edit_url(post_id)
         )

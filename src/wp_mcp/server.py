@@ -81,8 +81,10 @@ def build_server(client: WordPressClient | None = None) -> FastMCP:
     @mcp.tool()
     async def create_draft_post(
         ctx: Ctx,
-        title: Annotated[str, Field(min_length=1, max_length=200)],
-        content_html: Annotated[str, Field(min_length=1)],
+        title: Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+        ],
+        content_html: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
         slug: Annotated[str, Field(max_length=200)] = "",
         excerpt: str = "",
         categories: list[int] | None = None,

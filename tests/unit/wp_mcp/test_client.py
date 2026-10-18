@@ -537,3 +537,65 @@ def test_empty_credentials_in_env_are_reported_as_missing(
 
     with pytest.raises(ValidationError, match="username\n  Field required"):
         WPSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_negative_max_retries_in_env_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WP_USERNAME", "u")
+    monkeypatch.setenv("WP_APP_PASSWORD", "p")
+    monkeypatch.setenv("WP_MAX_RETRIES", "-1")
+
+    with pytest.raises(ValidationError, match="max_retries"):
+        WPSettings(_env_file=None)  # type: ignore[call-arg]
+
+
+async def test_list_posts_with_object_body_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": "x"})
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).list_posts()
+
+    assert info.value.code == "invalid_response"
+
+
+async def test_list_tags_with_object_body_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": "x"})
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).list_tags()
+
+    assert info.value.code == "invalid_response"
+
+
+async def test_list_tags_with_malformed_item_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"id": 1}])
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).list_tags()
+
+    assert info.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize("term_id", ["9", True, None, 1.5])
+async def test_create_tag_with_bad_term_id_raises_the_original_error(
+    term_id: object, make_client: Callable[[Handler], WordPressClient]
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        return httpx.Response(
+            400,
+            json={"code": "term_exists", "message": "exists", "data": {"term_id": term_id}},
+        )
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).create_tag("Python")
+
+    assert info.value.code == "term_exists"
