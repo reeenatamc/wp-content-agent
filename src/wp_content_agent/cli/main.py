@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import html
+import ipaddress
 import logging
 import re
 import sys
@@ -52,6 +53,8 @@ def main(
         format="%(levelname)s %(name)s: %(message)s",
     )
     command: Callable[..., Any] = args.command
+    if command is _serve:
+        return _serve(args, settings, open_runner)
     try:
         snapshot: RunSnapshot = asyncio.run(command(args, settings, open_runner, ask, out))
     except AgentError as exc:
@@ -84,7 +87,46 @@ def _parser() -> argparse.ArgumentParser:
         decide.add_argument("run_id")
         decide.add_argument("--note", default="", help="note stored with the decision")
         decide.set_defaults(command=_decide, approved=approved)
+    serve = commands.add_parser("serve", help="start the HTTP API")
+    serve.add_argument("--host", help="defaults to API_HOST")
+    serve.add_argument("--port", type=int, help="defaults to API_PORT")
+    serve.set_defaults(command=_serve)
     return parser
+
+
+def _serve(args: argparse.Namespace, settings: Settings, open_runner: OpenRunner) -> int:
+    import uvicorn
+
+    from wp_content_agent.api import create_app
+
+    host = args.host or settings.api_host
+    port = settings.api_port if args.port is None else args.port
+    if not 0 <= port <= 65535:
+        print(f"error: invalid port {port}", file=sys.stderr)
+        return EXIT_FAILED
+    if settings.api_token is None and not _is_loopback(host):
+        print(
+            f"error: refusing to listen on {host} without API_TOKEN; the run endpoints"
+            " would be open to anyone who can reach the port",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    app = create_app(settings, open_runner=open_runner)
+    try:
+        # uvicorn reports startup failures (missing API key, MCP server down) itself.
+        uvicorn.run(app, host=host, port=port, log_level=settings.log_level.lower())
+    except KeyboardInterrupt:
+        return 130
+    return EXIT_OK
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 async def _run(
