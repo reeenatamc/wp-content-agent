@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import httpx
+
 from wp_content_agent.llm import ModelClient
 from wp_content_agent.schemas import CreatedDraft, Term
 from wp_content_agent.settings import Settings
@@ -36,3 +38,4 @@ class AgentContext:
     reviewer: ModelClient
     wordpress: WordPressGateway
     extra_tools: tuple[Any, ...] = ()
+    http: httpx.AsyncClient | None = None
