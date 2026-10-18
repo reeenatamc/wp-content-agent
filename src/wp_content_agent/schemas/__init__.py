@@ -1,5 +1,11 @@
 from wp_content_agent.schemas.brief import Brief
-from wp_content_agent.schemas.context import RelatedPost, ResearchNotes, SourceNote, Term
+from wp_content_agent.schemas.context import (
+    CreatedDraft,
+    RelatedPost,
+    ResearchNotes,
+    SourceNote,
+    Term,
+)
 from wp_content_agent.schemas.draft import Draft
 from wp_content_agent.schemas.outline import Outline, OutlineSection
 from wp_content_agent.schemas.review import CheckName, CheckResult, Review, ReviewVerdict
@@ -9,6 +15,7 @@ __all__ = [
     "Brief",
     "CheckName",
     "CheckResult",
+    "CreatedDraft",
     "Draft",
     "NodeUsage",
     "Outline",
