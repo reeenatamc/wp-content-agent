@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -14,8 +15,13 @@ from wp_mcp.settings import WPSettings
 
 
 class FakeClient(WordPressClient):
-    def __init__(self) -> None:
-        super().__init__(httpx.AsyncClient(), WPSettings(base_url="http://wp.test"))
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        settings = WPSettings(
+            base_url="http://wp.test",
+            username="agent",
+            app_password="x",  # type: ignore[arg-type]
+        )
+        super().__init__(http, settings)
         self.drafts: list[CreateDraftInput] = []
 
     async def list_posts(self, search: str = "", per_page: int = 10) -> list[PostSummary]:
@@ -28,12 +34,20 @@ class FakeClient(WordPressClient):
 
     async def create_draft_post(self, draft: CreateDraftInput) -> DraftCreated:
         self.drafts.append(draft)
-        return DraftCreated(id=8, status="draft", link="l", edit_url=self.edit_url(8))
+        return DraftCreated(
+            id=8,
+            status="draft",
+            link="l",
+            edit_url=self.edit_url(8),
+            meta_description_saved=False,
+        )
 
 
 @pytest.fixture
-def fake() -> FakeClient:
-    return FakeClient()
+async def fake() -> AsyncIterator[FakeClient]:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    yield FakeClient(http)
+    await http.aclose()
 
 
 @pytest.fixture
@@ -100,3 +114,11 @@ async def test_blank_tag_name_is_rejected(server: FastMCP) -> None:
     result = await _call(server, "create_tag", {"name": "   "})
 
     assert result.isError
+
+
+async def test_per_page_limit_is_in_the_tool_schema(server: FastMCP) -> None:
+    async with create_connected_server_and_client_session(server) as session:
+        tools = await session.list_tools()
+
+    list_posts = next(t for t in tools.tools if t.name == "list_posts")
+    assert list_posts.inputSchema["properties"]["per_page"]["maximum"] == 20

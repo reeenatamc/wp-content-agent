@@ -1,10 +1,10 @@
-"""Tool input models and the compact outputs returned to the LLM."""
+"""Draft input and the compact outputs returned to the LLM."""
 
 import html
 import re
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 _TAG_RE = re.compile(r"<[^>]*>")
 
@@ -14,19 +14,6 @@ def clean_text(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("rendered", value.get("raw", ""))
     return html.unescape(_TAG_RE.sub("", str(value or ""))).strip()
-
-
-class ListPostsInput(BaseModel):
-    search: str = Field(default="", max_length=100)
-    per_page: int = Field(default=10, ge=1, le=20)
-
-
-class ListTagsInput(BaseModel):
-    search: str = Field(default="", max_length=100)
-
-
-class CreateTagInput(BaseModel):
-    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
 
 
 class CreateDraftInput(BaseModel):
@@ -70,3 +57,4 @@ class DraftCreated(BaseModel):
     status: str
     link: str
     edit_url: str
+    meta_description_saved: bool

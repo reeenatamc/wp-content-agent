@@ -279,3 +279,109 @@ async def test_draft_post_is_retried_when_connection_failed(
 
     assert calls == 2
     assert created.id == 9
+
+
+async def test_non_json_success_body_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>maintenance</html>")
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).list_categories()
+
+    assert info.value.code == "invalid_response"
+
+
+async def test_draft_response_missing_keys_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": 1})
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).create_draft_post(_draft())
+
+    assert info.value.code == "invalid_response"
+
+
+async def test_get_post_with_missing_keys_raises_invalid_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": 4})
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).get_post(4)
+
+    assert info.value.code == "invalid_response"
+
+
+async def test_draft_post_is_retried_after_pool_timeout(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.PoolTimeout("no free connection", request=request)
+        return httpx.Response(201, json={"id": 9, "status": "draft", "link": "l"})
+
+    created = await make_client(handler).create_draft_post(_draft())
+
+    assert calls == 2
+    assert created.id == 9
+
+
+async def test_connection_error_code_for_transport_failure(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(WordPressError) as info:
+        await make_client(handler).list_categories()
+
+    assert info.value.code == "connection_error"
+    assert isinstance(info.value.__cause__, httpx.ConnectError)
+
+
+async def test_meta_description_saved_when_echoed_in_response(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            201,
+            json={"id": 1, "status": "draft", "link": "l", "meta": {"meta_description": "Short"}},
+        )
+
+    created = await make_client(handler).create_draft_post(_draft(meta_description="Short"))
+
+    assert created.meta_description_saved is True
+
+
+async def test_meta_description_not_saved_logs_warning(
+    make_client: Callable[[Handler], WordPressClient], caplog: pytest.LogCaptureFixture
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": 1, "status": "draft", "link": "l", "meta": []})
+
+    with caplog.at_level("WARNING"):
+        created = await make_client(handler).create_draft_post(_draft(meta_description="Short"))
+
+    assert created.meta_description_saved is False
+    assert "meta_description" in caplog.text
+    assert "wpagent-meta.php" in caplog.text
+
+
+async def test_meta_description_saved_is_false_when_not_sent(
+    make_client: Callable[[Handler], WordPressClient],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": 1, "status": "draft", "link": "l"})
+
+    created = await make_client(handler).create_draft_post(_draft())
+
+    assert created.meta_description_saved is False

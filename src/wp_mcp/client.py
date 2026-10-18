@@ -5,6 +5,7 @@ import logging
 from typing import Any, Self
 
 import httpx
+from pydantic import ValidationError
 
 from wp_mcp.errors import WordPressError
 from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 _TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 # Errors where the request never reached WordPress, so even a POST is safe to resend.
-_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 class WordPressClient:
@@ -87,16 +88,34 @@ class WordPressClient:
         if draft.meta_description:
             body["meta"] = {self._settings.meta_description_key: draft.meta_description}
         data = await self._request("POST", "/posts", json=body)
-        return DraftCreated(
-            id=data["id"],
-            status=data["status"],
-            link=data["link"],
-            edit_url=self.edit_url(data["id"]),
-        )
+        try:
+            saved = False
+            if draft.meta_description:
+                key = self._settings.meta_description_key
+                meta = data.get("meta")
+                saved = isinstance(meta, dict) and meta.get(key) == draft.meta_description
+                if not saved:
+                    logger.warning(
+                        "meta description was sent but not saved: register the meta key %r "
+                        "for REST (see docker/mu-plugins/wpagent-meta.php)",
+                        key,
+                    )
+            return DraftCreated(
+                id=data["id"],
+                status=data["status"],
+                link=data["link"],
+                edit_url=self.edit_url(data["id"]),
+                meta_description_saved=saved,
+            )
+        except (KeyError, TypeError, AttributeError, ValidationError) as exc:
+            raise _invalid_response(exc) from exc
 
     async def get_post(self, post_id: int) -> PostDetail:
         data = await self._request("GET", f"/posts/{post_id}", params={"context": "edit"})
-        return PostDetail.model_validate({**data, "edit_url": self.edit_url(data["id"])})
+        try:
+            return PostDetail.model_validate({**data, "edit_url": self.edit_url(data["id"])})
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise _invalid_response(exc) from exc
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         # A POST that timed out or got a 5xx may still have created the post or tag,
@@ -104,24 +123,31 @@ class WordPressClient:
         idempotent = method != "POST"
         attempts = self._settings.max_retries + 1
         last: WordPressError | None = None
+        cause: httpx.TransportError | None = None
         for attempt in range(attempts):
             if attempt:
                 await asyncio.sleep(self._settings.backoff_s * 2 ** (attempt - 1))
             try:
                 response = await self._http.request(method, path, **kwargs)
-            except httpx.TimeoutException as exc:
-                last = WordPressError(f"request timed out: {path}", code="timeout")
-                last.__cause__ = exc
-                if not (idempotent or isinstance(exc, _NOT_SENT_ERRORS)):
-                    raise last from exc
             except httpx.TransportError as exc:
-                last = WordPressError(f"connection failed: {exc}", code="connection_error")
-                last.__cause__ = exc
+                cause = exc
+                if isinstance(exc, httpx.TimeoutException):
+                    last = WordPressError(f"request timed out: {path}", code="timeout")
+                else:
+                    last = WordPressError(f"connection failed: {exc}", code="connection_error")
                 if not (idempotent or isinstance(exc, _NOT_SENT_ERRORS)):
                     raise last from exc
             else:
+                cause = None
                 if response.is_success:
-                    return response.json()
+                    try:
+                        return response.json()
+                    except ValueError as exc:
+                        raise WordPressError(
+                            f"WordPress returned a non-JSON body: {path}",
+                            status_code=response.status_code,
+                            code="invalid_response",
+                        ) from exc
                 last = WordPressError.from_payload(response.status_code, _json_or_none(response))
                 retryable = response.status_code in _TRANSIENT_STATUS and (
                     idempotent or response.status_code == 429
@@ -137,7 +163,7 @@ class WordPressClient:
                 last,
             )
         assert last is not None
-        raise last
+        raise last from cause
 
 
 def _json_or_none(response: httpx.Response) -> Any:
@@ -145,3 +171,7 @@ def _json_or_none(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return None
+
+
+def _invalid_response(exc: Exception) -> WordPressError:
+    return WordPressError(f"unexpected response shape: {exc!r}", code="invalid_response")

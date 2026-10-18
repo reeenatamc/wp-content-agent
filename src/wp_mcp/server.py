@@ -3,24 +3,16 @@
 import logging
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.session import ServerSession
-from pydantic import ValidationError
+from pydantic import Field, StringConstraints
 
 from wp_mcp.client import WordPressClient
 from wp_mcp.errors import WordPressError
-from wp_mcp.models import (
-    CreateDraftInput,
-    CreateTagInput,
-    DraftCreated,
-    ListPostsInput,
-    ListTagsInput,
-    PostDetail,
-    PostSummary,
-    Term,
-)
+from wp_mcp.models import CreateDraftInput, DraftCreated, PostDetail, PostSummary, Term
 from wp_mcp.settings import WPSettings
 
 logger = logging.getLogger(__name__)
@@ -38,13 +30,6 @@ async def _guard[T](call: Awaitable[T]) -> T:
     except WordPressError as exc:
         logger.warning("WordPress call failed: %s", exc)
         raise ToolError(_one_line(str(exc))) from exc
-
-
-def _invalid(exc: ValidationError) -> ToolError:
-    details = "; ".join(
-        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
-    )
-    return ToolError(_one_line(f"Invalid input: {details}"))
 
 
 def build_server(client: WordPressClient | None = None) -> FastMCP:
@@ -67,13 +52,13 @@ def build_server(client: WordPressClient | None = None) -> FastMCP:
         return ctx.request_context.lifespan_context
 
     @mcp.tool()
-    async def list_posts(ctx: Ctx, search: str = "", per_page: int = 10) -> list[PostSummary]:
+    async def list_posts(
+        ctx: Ctx,
+        search: Annotated[str, Field(max_length=100)] = "",
+        per_page: Annotated[int, Field(ge=1, le=20)] = 10,
+    ) -> list[PostSummary]:
         """List published and draft posts, optionally filtered by a search term (max 20)."""
-        try:
-            args = ListPostsInput(search=search, per_page=per_page)
-        except ValidationError as exc:
-            raise _invalid(exc) from exc
-        return await _guard(wp(ctx).list_posts(args.search, args.per_page))
+        return await _guard(wp(ctx).list_posts(search, per_page))
 
     @mcp.tool()
     async def list_categories(ctx: Ctx) -> list[Term]:
@@ -81,47 +66,39 @@ def build_server(client: WordPressClient | None = None) -> FastMCP:
         return await _guard(wp(ctx).list_categories())
 
     @mcp.tool()
-    async def list_tags(ctx: Ctx, search: str = "") -> list[Term]:
+    async def list_tags(ctx: Ctx, search: Annotated[str, Field(max_length=100)] = "") -> list[Term]:
         """List tags with their ids, optionally filtered by a search term."""
-        try:
-            args = ListTagsInput(search=search)
-        except ValidationError as exc:
-            raise _invalid(exc) from exc
-        return await _guard(wp(ctx).list_tags(args.search))
+        return await _guard(wp(ctx).list_tags(search))
 
     @mcp.tool()
-    async def create_tag(ctx: Ctx, name: str) -> Term:
+    async def create_tag(
+        ctx: Ctx,
+        name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)],
+    ) -> Term:
         """Create a tag, or return the existing one if the name is taken."""
-        try:
-            args = CreateTagInput(name=name)
-        except ValidationError as exc:
-            raise _invalid(exc) from exc
-        return await _guard(wp(ctx).create_tag(args.name))
+        return await _guard(wp(ctx).create_tag(name))
 
     @mcp.tool()
     async def create_draft_post(
         ctx: Ctx,
-        title: str,
-        content_html: str,
-        slug: str = "",
+        title: Annotated[str, Field(min_length=1, max_length=200)],
+        content_html: Annotated[str, Field(min_length=1)],
+        slug: Annotated[str, Field(max_length=200)] = "",
         excerpt: str = "",
         categories: list[int] | None = None,
         tags: list[int] | None = None,
-        meta_description: str = "",
+        meta_description: Annotated[str, Field(max_length=320)] = "",
     ) -> DraftCreated:
         """Create a post with status draft. Never publishes. Categories and tags are ids."""
-        try:
-            draft = CreateDraftInput(
-                title=title,
-                content_html=content_html,
-                slug=slug,
-                excerpt=excerpt,
-                categories=categories or [],
-                tags=tags or [],
-                meta_description=meta_description,
-            )
-        except ValidationError as exc:
-            raise _invalid(exc) from exc
+        draft = CreateDraftInput(
+            title=title,
+            content_html=content_html,
+            slug=slug,
+            excerpt=excerpt,
+            categories=categories or [],
+            tags=tags or [],
+            meta_description=meta_description,
+        )
         return await _guard(wp(ctx).create_draft_post(draft))
 
     @mcp.tool()

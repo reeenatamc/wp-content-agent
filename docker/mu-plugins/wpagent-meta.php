@@ -1,4 +1,5 @@
 <?php
+// The registered key must match WP_META_DESCRIPTION_KEY in the MCP server settings.
 /**
  * Plugin Name: WP Agent meta
  * Description: Exposes the meta_description post meta in the REST API.
