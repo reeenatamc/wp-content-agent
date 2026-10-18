@@ -12,13 +12,26 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_cost(
-    model: str, input_tokens: int, output_tokens: int, prices: Mapping[str, ModelPrice]
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    prices: Mapping[str, ModelPrice],
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> float:
     price = _find_price(model, prices)
     if price is None:
         logger.warning("no price configured for model %s; cost reported as 0", model)
         return 0.0
-    return (input_tokens * price.input + output_tokens * price.output) / 1_000_000
+    uncached = max(input_tokens - cache_read_tokens - cache_write_tokens, 0)
+    total = (
+        uncached * price.input
+        + cache_read_tokens * price.cache_read_price
+        + cache_write_tokens * price.cache_write_price
+        + output_tokens * price.output
+    )
+    return total / 1_000_000
 
 
 def _find_price(model: str, prices: Mapping[str, ModelPrice]) -> ModelPrice | None:
@@ -32,24 +45,39 @@ def _find_price(model: str, prices: Mapping[str, ModelPrice]) -> ModelPrice | No
 def usage_from_messages(
     node: str, model: str, messages: Iterable[BaseMessage], prices: Mapping[str, ModelPrice]
 ) -> NodeUsage:
-    input_tokens = output_tokens = 0
+    input_tokens = output_tokens = cache_read = cache_write = 0
     for message in messages:
         if isinstance(message, AIMessage) and message.usage_metadata:
             input_tokens += message.usage_metadata["input_tokens"]
             output_tokens += message.usage_metadata["output_tokens"]
+            details = message.usage_metadata.get("input_token_details", {})
+            cache_read += details.get("cache_read", 0)
+            cache_write += details.get("cache_creation", 0)
     usage = NodeUsage(
         node=node,
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cost_usd=estimate_cost(model, input_tokens, output_tokens, prices),
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
+        cost_usd=estimate_cost(
+            model,
+            input_tokens,
+            output_tokens,
+            prices,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        ),
     )
     logger.info(
-        "node=%s model=%s input_tokens=%d output_tokens=%d cost_usd=%.5f",
+        "node=%s model=%s input_tokens=%d output_tokens=%d "
+        "cache_read_tokens=%d cache_write_tokens=%d cost_usd=%.5f",
         node,
         model,
         input_tokens,
         output_tokens,
+        cache_read,
+        cache_write,
         usage.cost_usd,
     )
     return usage

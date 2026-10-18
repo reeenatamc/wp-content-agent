@@ -14,10 +14,20 @@ _ANTHROPIC_DEFAULTS = {"writer": "claude-sonnet-5-5", "reviewer": "claude-haiku-
 
 
 class ModelPrice(BaseModel):
-    """USD per million tokens."""
+    """USD per million tokens. Cache defaults follow Anthropic's 5-minute cache pricing."""
 
     input: float = Field(ge=0)
     output: float = Field(ge=0)
+    cache_read: float | None = Field(default=None, ge=0)
+    cache_write: float | None = Field(default=None, ge=0)
+
+    @property
+    def cache_read_price(self) -> float:
+        return self.cache_read if self.cache_read is not None else self.input * 0.1
+
+    @property
+    def cache_write_price(self) -> float:
+        return self.cache_write if self.cache_write is not None else self.input * 1.25
 
 
 def _default_prices() -> dict[str, ModelPrice]:

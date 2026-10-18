@@ -20,4 +20,6 @@ class NodeUsage(BaseModel):
     model: str
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(ge=0)

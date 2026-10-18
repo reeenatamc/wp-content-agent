@@ -5,7 +5,7 @@ import anthropic
 import openai
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from pydantic import BaseModel
 
 from wp_content_agent.errors import LLMError
@@ -21,11 +21,24 @@ class ModelClient:
     """A chat model plus the bookkeeping every node needs: typed output and usage."""
 
     def __init__(
-        self, chat_model: BaseChatModel, model_name: str, prices: Mapping[str, ModelPrice]
+        self,
+        chat_model: BaseChatModel,
+        model_name: str,
+        prices: Mapping[str, ModelPrice],
+        *,
+        cache_prompts: bool = False,
     ) -> None:
         self.chat_model = chat_model
         self.model_name = model_name
         self._prices = prices
+        self.cache_prompts = cache_prompts
+
+    def system(self, text: str) -> SystemMessage:
+        """OpenAI caches long prefixes automatically, so only Anthropic needs the marker."""
+        if not self.cache_prompts:
+            return SystemMessage(text)
+        block = {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+        return SystemMessage(content=[block])
 
     async def structured[T: BaseModel](
         self, schema: type[T], messages: Sequence[BaseMessage], *, node: str

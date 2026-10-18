@@ -37,3 +37,17 @@ def test_missing_api_key_fails_at_build_time(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(LLMError, match="ANTHROPIC_API_KEY"):
         build_model_client(settings, "writer")
+
+
+def test_cache_prompts_enabled_only_for_anthropic() -> None:
+    anthropic_settings = Settings(_env_file=None, anthropic_api_key="test")
+    openai_settings = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        openai_api_key="test",
+        writer_model="w",
+        reviewer_model="r",
+    )
+
+    assert build_model_client(anthropic_settings, "writer").cache_prompts is True
+    assert build_model_client(openai_settings, "writer").cache_prompts is False
